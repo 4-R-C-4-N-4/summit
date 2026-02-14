@@ -1,0 +1,9 @@
+# /summit/Cargo.toml
+[workspace]
+members = [
+    "crates/summitd",
+    "crates/summit-core",
+    "crates/libsummit",
+    "crates/summit-ctl",
+]
+resolver = "2"
