@@ -2,3 +2,4 @@
 //! All other Summit crates depend on this one.
 
 pub mod wire;
+pub mod crypto;

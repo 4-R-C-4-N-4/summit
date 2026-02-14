@@ -157,6 +157,19 @@ pub struct HandshakeResponse {
 
 assert_eq_size!(HandshakeResponse, [u8; 144]);
 
+/// Noise_XX handshake message 3 — sent by the initiator to complete the handshake.
+/// Wire size: 64 bytes.
+#[derive(Debug, Clone, AsBytes, FromBytes, FromZeroes)]
+#[repr(C, packed)]
+pub struct HandshakeComplete {
+    /// Noise_XX message 3: encrypted static key (32 bytes) + Poly1305 MAC (16 bytes)
+    /// plus encrypted payload (0 bytes) + MAC (16 bytes)
+    pub encrypted_static:  [u8; 48],
+    pub encrypted_payload: [u8; 16],
+}
+
+assert_eq_size!(HandshakeComplete, [u8; 64]);
+
 // ── Contract ──────────────────────────────────────────────────────────────────
 
 /// Latency contract — declared per session, governs scheduling.
@@ -249,6 +262,7 @@ mod tests {
     use super::*;
     use zerocopy::AsBytes;
 
+    #[allow(dead_code)]
     fn zeroed_chunk_header() -> ChunkHeader {
         ChunkHeader {
             content_hash: [0u8; 32],

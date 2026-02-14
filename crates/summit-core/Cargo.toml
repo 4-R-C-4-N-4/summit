@@ -11,3 +11,4 @@ snow              = "0.9"
 rand              = "0.8"
 zeroize           = { version = "1", features = ["derive"] }
 thiserror         = "1"
+x25519-dalek      = { version = "2", features = ["static_secrets"] }
