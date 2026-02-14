@@ -5,5 +5,6 @@ members = [
     "crates/summit-core",
     "crates/libsummit",
     "crates/summit-ctl",
+    "tests/integration",
 ]
 resolver = "2"

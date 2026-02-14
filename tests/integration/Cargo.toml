@@ -1,0 +1,13 @@
+[package]
+name = "integration"
+version = "0.1.0"
+edition = "2021"
+
+[[test]]
+name = "integration"
+path = "main.rs"
+
+[dev-dependencies]
+summit-core = { path = "../../crates/summit-core" }
+tokio       = { version = "1", features = ["full"] }
+anyhow      = "1"
