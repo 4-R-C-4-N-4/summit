@@ -3,6 +3,7 @@
 mod capability;
 mod session;
 mod chunk;
+mod cache;
 
 use std::net::{Ipv6Addr, SocketAddrV6};
 use std::sync::Arc;
@@ -15,6 +16,8 @@ use summit_core::wire::{CapabilityAnnouncement, Contract, HandshakeInit};
 
 use capability::{broadcast, listener, new_registry};
 use session::{handshake, new_session_table};
+
+use cache::ChunkCache;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -65,6 +68,12 @@ async fn main() -> Result<()> {
     };
 
     tracing::info!("session sockets bound");
+
+    // Create cache (use /tmp for testing, /var/cache/summit for production)
+    let cache_root = std::env::var("SUMMIT_CACHE")
+    .unwrap_or_else(|_| format!("/tmp/summit-cache-{}", std::process::id()));
+    let cache = ChunkCache::new(&cache_root)?;
+    tracing::info!(root = %cache_root, "chunk cache initialized");
 
     // Capability tasks
     let broadcast_task = tokio::spawn(broadcast::broadcast_loop(
@@ -247,19 +256,6 @@ async fn main() -> Result<()> {
                     // Create channel for received chunks
                     let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::channel::<chunk::IncomingChunk>(100);
 
-                    // Spawn receive loop
-                    let recv_socket = socket.clone();
-                    let recv_crypto = crypto.clone();
-                    tokio::spawn(async move {
-                        if let Err(e) = chunk::receive::receive_loop(
-                            recv_socket,
-                            recv_crypto,
-                            chunk_tx,
-                        ).await {
-                            tracing::warn!(error = %e, "receive loop terminated");
-                        }
-                    });
-
                     // Spawn receiver printer (logs received chunks)
                     tokio::spawn(async move {
                         while let Some(chunk) = chunk_rx.recv().await {
@@ -272,9 +268,25 @@ async fn main() -> Result<()> {
                         }
                     });
 
+                    // Spawn receive loop
+                    let recv_socket = socket.clone();
+                    let recv_crypto = crypto.clone();
+                    let recv_cache = cache.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = chunk::receive::receive_loop(
+                            recv_socket,
+                            recv_crypto,
+                            chunk_tx,
+                            recv_cache,
+                        ).await {
+                            tracing::warn!(error = %e, "receive loop terminated");
+                        }
+                    });
+
                     // Spawn ping sender
                     let send_socket = socket.clone();
                     let send_crypto = crypto.clone();
+                    let send_cache = cache.clone();
                     tokio::spawn(async move {
                         let mut counter = 0u64;
                         let mut interval = tokio::time::interval(Duration::from_secs(2));
@@ -291,9 +303,10 @@ async fn main() -> Result<()> {
 
                             if let Err(e) = chunk::send::send_chunk(
                                 send_socket.clone(),
-                                                                    chunk_peer_addr,  // changed from peer_addr
+                                                                    chunk_peer_addr,
                                                                     send_crypto.clone(),
                                                                     chunk,
+                                                                    send_cache.clone(),
                             ).await {
                                 tracing::warn!(error = %e, "chunk send failed");
                             }

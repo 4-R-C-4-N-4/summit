@@ -17,3 +17,4 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 zerocopy    = { version = "0.7", features = ["derive"] }
 libc        = "0.2"
 hex         = "0.4"
+memmap2     = "0.9"

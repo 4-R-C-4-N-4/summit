@@ -13,17 +13,20 @@ use summit_core::wire::{ChunkHeader, CHUNK_VERSION};
 
 use super::OutgoingChunk;
 
-/// Send a chunk over an established session.
-///
-/// Constructs the chunk header, encrypts header + payload via the session's
-/// Noise transport state, and transmits the result as a single UDP datagram.
+use crate::cache::ChunkCache;
+
 pub async fn send_chunk(
     socket:    Arc<UdpSocket>,
     peer_addr: SocketAddr,
     session:   Arc<Mutex<Session>>,
     chunk:     OutgoingChunk,
+    cache:     ChunkCache,  // NEW
 ) -> Result<()> {
     let content_hash = hash(&chunk.payload);
+
+    // Store in cache before sending (dedup for future sends)
+    cache.put(&content_hash, &chunk.payload)
+    .context("failed to cache chunk")?;
 
     let header = ChunkHeader {
         content_hash,
@@ -34,28 +37,26 @@ pub async fn send_chunk(
         version:   CHUNK_VERSION,
     };
 
-    // Serialize header + payload
     let mut plaintext = Vec::with_capacity(72 + chunk.payload.len());
     plaintext.extend_from_slice(header.as_bytes());
     plaintext.extend_from_slice(&chunk.payload);
 
-    // Encrypt via session
     let mut ciphertext = Vec::new();
     {
         let mut sess = session.lock().await;
         sess.encrypt(&plaintext, &mut ciphertext)
-            .context("chunk encryption failed")?;
+        .context("chunk encryption failed")?;
     }
 
-    // Send encrypted chunk
     socket.send_to(&ciphertext, peer_addr).await
-        .context("failed to send chunk")?;
+    .context("failed to send chunk")?;
 
     tracing::info!(
         %peer_addr,
         content_hash = hex::encode(content_hash),
-        payload_len = chunk.payload.len(),
-        "chunk sent"
+                   payload_len = chunk.payload.len(),
+                   cached = true,
+                   "chunk sent"
     );
 
     Ok(())

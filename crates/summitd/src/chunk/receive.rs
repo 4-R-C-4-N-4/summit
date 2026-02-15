@@ -13,23 +13,20 @@ use summit_core::wire::ChunkHeader;
 
 use super::IncomingChunk;
 
-/// Receive loop for a single session.
-///
-/// Listens on the session's socket, decrypts incoming chunks,
-/// verifies content hashes, and sends verified chunks to the
-/// application via the channel.
+use crate::cache::ChunkCache;
+
 pub async fn receive_loop(
     socket:   Arc<UdpSocket>,
     session:  Arc<Mutex<Session>>,
     chunk_tx: mpsc::Sender<IncomingChunk>,
+    cache:    ChunkCache,  // NEW
 ) -> Result<()> {
-    let mut buf = vec![0u8; 65536 + 1024]; // max payload + header + MAC overhead
+    let mut buf = vec![0u8; 65536 + 1024];
 
     loop {
         let (len, _peer) = socket.recv_from(&mut buf).await
-            .context("recv_from failed")?;
+        .context("recv_from failed")?;
 
-        // Decrypt
         let mut plaintext = Vec::new();
         {
             let mut sess = session.lock().await;
@@ -39,7 +36,6 @@ pub async fn receive_loop(
             }
         }
 
-        // Parse header
         if plaintext.len() < 72 {
             tracing::trace!("received chunk too short, discarding");
             continue;
@@ -55,11 +51,16 @@ pub async fn receive_loop(
 
         let payload = Bytes::copy_from_slice(&plaintext[72..]);
 
-        // Verify content hash
         let computed_hash = hash(&payload);
         if computed_hash != header.content_hash {
             tracing::warn!("chunk hash mismatch, discarding");
             continue;
+        }
+
+        // Cache the chunk
+        if let Err(e) = cache.put(&header.content_hash, &payload) {
+            tracing::warn!(error = %e, "failed to cache chunk");
+            // Continue anyway — caching is best-effort
         }
 
         let incoming = IncomingChunk {
@@ -71,12 +72,12 @@ pub async fn receive_loop(
 
         tracing::info!(
             content_hash = hex::encode(incoming.content_hash),
-            type_tag = incoming.type_tag,
-            payload_len = incoming.payload.len(),
-            "chunk received"
+                       type_tag = incoming.type_tag,
+                       payload_len = incoming.payload.len(),
+                       cached = true,
+                       "chunk received"
         );
 
-        // Send to application
         if chunk_tx.send(incoming).await.is_err() {
             bail!("chunk receiver dropped, terminating receive loop");
         }
