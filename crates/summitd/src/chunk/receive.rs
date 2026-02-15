@@ -14,6 +14,8 @@ use summit_core::wire::ChunkHeader;
 use super::IncomingChunk;
 
 use crate::cache::ChunkCache;
+use crate::schema::KnownSchema;
+
 
 pub async fn receive_loop(
     socket:   Arc<UdpSocket>,
@@ -55,6 +57,25 @@ pub async fn receive_loop(
         if computed_hash != header.content_hash {
             tracing::warn!("chunk hash mismatch, discarding");
             continue;
+        }
+
+        // SCHEMA VALIDATION
+        if let Some(schema) = KnownSchema::from_id(&header.schema_id) {
+            if let Err(e) = schema.validate(&payload) {
+                tracing::warn!(
+                    schema = schema.name(),
+                               error = %e,
+                               content_hash = hex::encode(header.content_hash),
+                               "chunk failed schema validation, discarding"
+                );
+                continue;
+            }
+            tracing::trace!(schema = schema.name(), "chunk validated");
+        } else {
+            tracing::trace!(
+                schema_id = hex::encode(header.schema_id),
+                            "unknown schema, skipping validation"
+            );
         }
 
         // Cache the chunk

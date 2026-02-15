@@ -4,6 +4,7 @@ mod capability;
 mod session;
 mod chunk;
 mod cache;
+mod schema;
 
 use std::net::{Ipv6Addr, SocketAddrV6};
 use std::sync::Arc;
@@ -297,7 +298,7 @@ async fn main() -> Result<()> {
                             let payload = format!("ping #{}", counter);
                             let chunk = chunk::OutgoingChunk {
                                 type_tag:  1,
-                                schema_id: summit_core::crypto::hash(b"summit.test.ping"),
+                                schema_id: schema::KnownSchema::TestPing.id(),
                                  payload:   bytes::Bytes::from(payload),
                             };
 
