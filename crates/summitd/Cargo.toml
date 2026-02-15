@@ -1,6 +1,17 @@
 [package]
 name = "summitd"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
+summit-core = { path = "../summit-core" }
+tokio       = { version = "1", features = ["full"] }
+socket2     = "0.5"
+dashmap     = "5"
+anyhow      = "1"
+thiserror   = "1"
+tracing     = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+zerocopy    = { version = "0.7", features = ["derive"] }
+libc        = "0.2"
+hex         = "0.4"
