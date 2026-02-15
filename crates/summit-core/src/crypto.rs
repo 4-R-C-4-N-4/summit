@@ -457,6 +457,34 @@ mod tests {
 
     // ── Noise_XX Handshake ────────────────────────────────────────────────────
 
+    #[test]
+    fn print_wire_struct_sizes() {
+        use crate::wire::*;
+        println!("HandshakeInit wire size:     {}", std::mem::size_of::<HandshakeInit>());
+        println!("HandshakeResponse wire size: {}", std::mem::size_of::<HandshakeResponse>());
+        println!("HandshakeComplete wire size: {}", std::mem::size_of::<HandshakeComplete>());
+        println!("Expected noise msg1 size: 32");
+        println!("Expected noise msg2 size: 96");
+        println!("Expected noise msg3 size: 64");
+    }
+
+    #[test]
+    fn print_noise_message_sizes() {
+        let ikp = Keypair::generate();
+        let rkp = Keypair::generate();
+
+        let (initiator, msg1) = NoiseInitiator::new(&ikp).unwrap();
+        let i_nonce = *initiator.nonce();
+        println!("msg1 size: {}", msg1.len());
+
+        let responder = NoiseResponder::new(&rkp).unwrap();
+        let r_nonce = *responder.nonce();
+        let (pending, msg2) = responder.respond(&msg1, &i_nonce).unwrap();
+        println!("msg2 size: {}", msg2.len());
+
+        let (_session, msg3) = initiator.finish(&msg2, &r_nonce).unwrap();
+        println!("msg3 size: {}", msg3.len());
+    }
 
     #[test]
     fn noise_handshake_completes() {
