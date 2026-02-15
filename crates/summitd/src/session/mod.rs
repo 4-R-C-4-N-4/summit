@@ -1,16 +1,11 @@
 //! Session management — tracks active Noise_XX sessions.
-//!
-//! A session begins after a successful three-message Noise_XX handshake.
-//! Sessions are stored in a DashMap keyed by session_id and accessed
-//! concurrently by the send and receive tasks.
-//!
-//! Session is behind Arc<Mutex<>> because snow::TransportState is not Sync.
 
 use std::sync::Arc;
 use std::time::Instant;
 
 use dashmap::DashMap;
 use tokio::sync::Mutex;
+use tokio::net::UdpSocket;
 
 use summit_core::crypto::Session;
 use summit_core::wire::Contract;
@@ -32,15 +27,14 @@ pub struct SessionMeta {
     pub established_at: Instant,
 }
 
-/// An active session — crypto state plus metadata.
+/// An active session — crypto state, metadata, and dedicated I/O socket.
 pub struct ActiveSession {
-    pub meta:    SessionMeta,
-    pub crypto:  Arc<Mutex<Session>>,
+    pub meta:   SessionMeta,
+    pub crypto: Arc<Mutex<Session>>,
+    pub socket: Arc<UdpSocket>,  // Dedicated socket for chunk I/O
 }
 
 /// The session table — shared across all tasks.
-///
-/// Keyed on session_id ([u8; 32]).
 pub type SessionTable = Arc<DashMap<[u8; 32], ActiveSession>>;
 
 /// Create a new empty session table.

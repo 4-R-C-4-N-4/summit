@@ -2,6 +2,7 @@
 
 mod capability;
 mod session;
+mod chunk;
 
 use std::net::{Ipv6Addr, SocketAddrV6};
 use std::sync::Arc;
@@ -104,6 +105,7 @@ async fn main() -> Result<()> {
                                 &keypair,
                                 sessions,
                                 Contract::Bulk,
+                                interface_index,
                             ).await {
                                 tracing::warn!(error = %e, "handshake respond failed");
                             }
@@ -176,6 +178,7 @@ async fn main() -> Result<()> {
                             &keypair,
                             sessions,
                             Contract::Bulk,
+                            interface_index,
                         ).await {
                             tracing::warn!(error = %e, "handshake initiate failed");
                         }
@@ -206,6 +209,101 @@ async fn main() -> Result<()> {
         })
     };
 
+    // Spawn chunk send/receive tasks for each active session
+    // Spawn chunk send/receive tasks for each active session
+    let chunk_manager = {
+        let sessions = sessions.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(1));
+            let mut seen_sessions = std::collections::HashSet::new();
+
+            loop {
+                interval.tick().await;
+                tracing::debug!(session_count = sessions.len(), "chunk manager tick");
+
+                for entry in sessions.iter() {
+                    let session_id = *entry.key();
+                    let active = entry.value();
+
+                    if seen_sessions.contains(&session_id) {
+                        continue;
+                    }
+                    seen_sessions.insert(session_id);
+                    tracing::info!(session_id = hex::encode(session_id), "spawning chunk tasks for session");
+
+
+                    let peer_addr = active.meta.peer_addr;
+                    // Change peer_addr port to 9002 for chunks
+                    let chunk_peer_addr = match peer_addr {
+                        std::net::SocketAddr::V6(mut addr) => {
+                            addr.set_port(9002);
+                            std::net::SocketAddr::V6(addr)
+                        }
+                        _ => peer_addr,
+                    };
+                    let crypto = active.crypto.clone();
+                    let socket = active.socket.clone();
+
+                    // Create channel for received chunks
+                    let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::channel::<chunk::IncomingChunk>(100);
+
+                    // Spawn receive loop
+                    let recv_socket = socket.clone();
+                    let recv_crypto = crypto.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = chunk::receive::receive_loop(
+                            recv_socket,
+                            recv_crypto,
+                            chunk_tx,
+                        ).await {
+                            tracing::warn!(error = %e, "receive loop terminated");
+                        }
+                    });
+
+                    // Spawn receiver printer (logs received chunks)
+                    tokio::spawn(async move {
+                        while let Some(chunk) = chunk_rx.recv().await {
+                            tracing::info!(
+                                content_hash = hex::encode(chunk.content_hash),
+                                           type_tag = chunk.type_tag,
+                                           payload = %String::from_utf8_lossy(&chunk.payload),
+                                           "RECEIVED CHUNK"
+                            );
+                        }
+                    });
+
+                    // Spawn ping sender
+                    let send_socket = socket.clone();
+                    let send_crypto = crypto.clone();
+                    tokio::spawn(async move {
+                        let mut counter = 0u64;
+                        let mut interval = tokio::time::interval(Duration::from_secs(2));
+                        loop {
+                            interval.tick().await;
+                            counter += 1;
+
+                            let payload = format!("ping #{}", counter);
+                            let chunk = chunk::OutgoingChunk {
+                                type_tag:  1,
+                                schema_id: summit_core::crypto::hash(b"summit.test.ping"),
+                                 payload:   bytes::Bytes::from(payload),
+                            };
+
+                            if let Err(e) = chunk::send::send_chunk(
+                                send_socket.clone(),
+                                                                    chunk_peer_addr,  // changed from peer_addr
+                                                                    send_crypto.clone(),
+                                                                    chunk,
+                            ).await {
+                                tracing::warn!(error = %e, "chunk send failed");
+                            }
+                        }
+                    });
+                }
+            }
+        })
+    };
+
     tokio::select! {
         r = broadcast_task    => tracing::error!("broadcast task exited: {:?}", r),
         r = listener_task     => tracing::error!("listener task exited: {:?}", r),
@@ -213,6 +311,7 @@ async fn main() -> Result<()> {
         r = session_listener  => tracing::error!("session listener exited: {:?}", r),
         r = session_initiator => tracing::error!("session initiator exited: {:?}", r),
         r = session_printer   => tracing::error!("session printer exited: {:?}", r),
+        r = chunk_manager     => tracing::error!("chunk manager exited: {:?}", r),
     }
 
     Ok(())

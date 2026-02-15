@@ -1,13 +1,4 @@
 //! Noise_XX handshake over UDP.
-//!
-//! Implements both sides of the three-message handshake:
-//!
-//!   Initiator -> Responder   HandshakeInit     (msg 1)
-//!   Responder -> Initiator   HandshakeResponse (msg 2)
-//!   Initiator -> Responder   HandshakeComplete (msg 3)
-//!
-//! After msg 3 both sides derive identical session keys and the
-//! session is inserted into the SessionTable.
 
 use std::net::{SocketAddr, Ipv6Addr, SocketAddrV6};
 use std::sync::Arc;
@@ -27,32 +18,32 @@ use summit_core::wire::{
 
 use super::{ActiveSession, SessionMeta, SessionTable};
 
-/// Timeout for each individual handshake message.
 const MSG_TIMEOUT: Duration = Duration::from_secs(HANDSHAKE_TIMEOUT_SECS);
+
 // ── Initiator ─────────────────────────────────────────────────────────────────
 
 pub async fn initiate(
-    socket:        Arc<UdpSocket>,
-    peer_addr:     SocketAddr,
-    announcement:  &CapabilityAnnouncement,
-    local_keypair: &Keypair,
-    sessions:      SessionTable,
-    contract:      Contract,
+    socket:          Arc<UdpSocket>,
+    peer_addr:       SocketAddr,
+    announcement:    &CapabilityAnnouncement,
+    local_keypair:   &Keypair,
+    sessions:        SessionTable,
+    contract:        Contract,
+    interface_index: u32,
 ) -> Result<[u8; 32]> {
     tracing::debug!(%peer_addr, "initiating handshake");
 
-    let (initiator, msg1_bytes) = NoiseInitiator::new(local_keypair)
+    let (initiator, msg1_payload) = NoiseInitiator::new(local_keypair)
     .context("failed to create Noise initiator")?;
     let initiator_nonce = *initiator.nonce();
 
-    // Pack msg1 — noise_msg is exactly 32 bytes for Noise_XX msg1
     let mut init = HandshakeInit {
         nonce:           initiator_nonce,
         capability_hash: announcement.capability_hash,
         noise_msg:       [0u8; 32],
     };
-    let copy_len = msg1_bytes.len().min(32);
-    init.noise_msg[..copy_len].copy_from_slice(&msg1_bytes[..copy_len]);
+    let copy_len = msg1_payload.len().min(32);
+    init.noise_msg[..copy_len].copy_from_slice(&msg1_payload[..copy_len]);
 
     socket.send_to(init.as_bytes(), peer_addr).await
     .context("failed to send HandshakeInit")?;
@@ -83,7 +74,6 @@ pub async fn initiate(
 
     tracing::trace!(from = %from, "received HandshakeResponse (msg2)");
 
-    // Pass the full noise_msg field — it's exactly the right size now
     let responder_nonce = response.nonce;
     let (session, msg3_bytes) = initiator
     .finish(&response.noise_msg, &responder_nonce)
@@ -96,9 +86,17 @@ pub async fn initiate(
     complete.noise_msg[..copy_len].copy_from_slice(&msg3_bytes[..copy_len]);
 
     // Send msg3 to the SOURCE of msg2, not the original peer_addr
-    socket.send_to(complete.as_bytes(), from).await  // changed from peer_addr to from
+    socket.send_to(complete.as_bytes(), from).await
     .context("failed to send HandshakeComplete")?;
     tracing::trace!(to = %from, session_id = hex::encode(session_id), "sent HandshakeComplete (msg3)");
+
+    // Create dedicated socket for chunk I/O on this session
+    let chunk_socket = UdpSocket::bind(SocketAddrV6::new(
+        Ipv6Addr::UNSPECIFIED,
+        9002,  // fixed port instead of 0
+        0,
+        interface_index,
+    )).await.context("failed to bind chunk socket")?;
 
     sessions.insert(session_id, ActiveSession {
         meta: SessionMeta {
@@ -108,6 +106,7 @@ pub async fn initiate(
             established_at: std::time::Instant::now(),
         },
         crypto: Arc::new(Mutex::new(session)),
+                    socket: Arc::new(chunk_socket),
     });
 
     tracing::info!(%peer_addr, session_id = hex::encode(session_id), "session established (initiator)");
@@ -115,32 +114,20 @@ pub async fn initiate(
 }
 
 // ── Responder ─────────────────────────────────────────────────────────────────
+
 pub async fn respond(
-    peer_addr:     SocketAddr,
-    init_bytes:    &[u8],
-    local_keypair: &Keypair,
-    sessions:      SessionTable,
-    contract:      Contract,
+    peer_addr:       SocketAddr,
+    init_bytes:      &[u8],
+    local_keypair:   &Keypair,
+    sessions:        SessionTable,
+    contract:        Contract,
+    interface_index: u32,
 ) -> Result<[u8; 32]> {
-    tracing::debug!(
-        %peer_addr,
-        bytes_len = init_bytes.len(),
-                    expected_size = std::mem::size_of::<HandshakeInit>(),
-                    first_bytes = hex::encode(&init_bytes[..init_bytes.len().min(16)]),
-                    "responding to handshake - raw input"
-    );
     tracing::debug!(%peer_addr, "responding to handshake");
 
-    // Extract interface index from peer_addr
-    let interface_index = match peer_addr {
-        SocketAddr::V6(addr) => addr.scope_id(),
-        _ => bail!("expected IPv6 peer address"),
-    };
-
-    // Bind ephemeral socket on the same interface
     let response_socket = UdpSocket::bind(SocketAddrV6::new(
         Ipv6Addr::UNSPECIFIED,
-        0,  // ephemeral port
+        0,
         0,
         interface_index,
     )).await.context("failed to bind response socket")?;
@@ -168,7 +155,7 @@ pub async fn respond(
     .context("failed to send HandshakeResponse")?;
     tracing::trace!(%peer_addr, "sent HandshakeResponse (msg2)");
 
-    // Wait for msg3 on OUR socket, not the shared listen socket
+    // Wait for msg3 on OUR socket
     let mut buf = vec![0u8; 256];
     let (len, from) = timeout(MSG_TIMEOUT, response_socket.recv_from(&mut buf))
     .await
@@ -188,6 +175,14 @@ pub async fn respond(
 
     let session_id = session.session_id;
 
+    // Create dedicated socket for chunk I/O on this session
+    let chunk_socket = UdpSocket::bind(SocketAddrV6::new(
+        Ipv6Addr::UNSPECIFIED,
+        9002,  // fixed port instead of 0
+        0,
+        interface_index,
+    )).await.context("failed to bind chunk socket")?;
+
     sessions.insert(session_id, ActiveSession {
         meta: SessionMeta {
             session_id,
@@ -196,6 +191,7 @@ pub async fn respond(
             established_at: std::time::Instant::now(),
         },
         crypto: Arc::new(Mutex::new(session)),
+                    socket: Arc::new(chunk_socket),
     });
 
     tracing::info!(%peer_addr, session_id = hex::encode(session_id), "session established (responder)");
