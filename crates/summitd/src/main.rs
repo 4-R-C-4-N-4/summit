@@ -4,10 +4,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use dashmap::DashMap;
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
-use zerocopy::{AsBytes, FromBytes};
+use zerocopy::AsBytes;
 
 use summit_core::crypto::Keypair;
 use summit_core::wire::Contract;
@@ -18,10 +17,11 @@ mod chunk;
 mod delivery;
 mod schema;
 mod session;
+mod qos;
 
 use cache::ChunkCache;
 use capability::{broadcast, listener, new_registry};
-use session::{new_session_table, ActiveSession, SessionMeta, SessionTable};
+use session::{new_session_table, ActiveSession, SessionMeta};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -86,18 +86,6 @@ async fn main() -> Result<()> {
     let session_listen_socket = Arc::new(session_listen_socket);
     // let session_send_socket = Arc::new(session_send_socket);
 
-    // Global chunk socket - shared by all sessions
-    // let chunk_socket = UdpSocket::bind("[::]:0").await
-    // .context("failed to bind chunk socket")?;
-    // let chunk_port = chunk_socket.local_addr()?.port();
-    // let chunk_socket = Arc::new(chunk_socket);
-
-    // tracing::info!(
-    //     session_port = session_listen_port,
-    //     chunk_port,
-    //     "sockets bound"
-    // );
-
     // Create cache (use /tmp for testing, /var/cache/summit for production)
     let cache_root = std::env::var("SUMMIT_CACHE")
     .unwrap_or_else(|_| format!("/tmp/summit-cache-{}", std::process::id()));
@@ -152,8 +140,6 @@ async fn main() -> Result<()> {
         let keypair             = keypair.clone();
         let sessions            = sessions.clone();
         let tracker             = handshake_tracker.clone();
-        let session_listen_port = session_listen_port;
-        let interface_index     = interface_index;
         let local_addr          = local_link_addr;
 
         tokio::spawn(async move {
@@ -372,7 +358,8 @@ async fn main() -> Result<()> {
                                         established_at: std::time::Instant::now(),
                                     },
                                     crypto: Arc::new(Mutex::new(state.session)),
-                                                socket: state.chunk_socket,
+                                    socket: state.chunk_socket,
+                                    bucket: Mutex::new(qos::TokenBucket::new(Contract::Bulk)),
                                 });
 
                                 tracing::info!(
@@ -416,7 +403,8 @@ async fn main() -> Result<()> {
                                         established_at: std::time::Instant::now(),
                                     },
                                     crypto: Arc::new(Mutex::new(state.session)),
-                                                socket: state.chunk_socket,
+                                    socket: state.chunk_socket,
+                                    bucket: Mutex::new(qos::TokenBucket::new(Contract::Bulk)),
                                 });
 
                                 tracing::info!(
@@ -636,7 +624,6 @@ async fn main() -> Result<()> {
     let broadcast_sender = {
         let sessions = sessions.clone();
         let cache = cache.clone();
-        let registry = registry.clone();  // NEW - need registry access
 
         tokio::spawn(async move {
             let mut counter = 0u64;
@@ -659,6 +646,11 @@ async fn main() -> Result<()> {
                      payload:   bytes::Bytes::from(payload),
                 };
 
+                // Priority check — suppress Background if any Realtime session exists
+                let has_realtime = sessions.iter()
+                .any(|e| matches!(e.value().meta.contract, Contract::Realtime));
+
+
                 let mut send_tasks = Vec::new();
 
                 for entry in sessions.iter() {
@@ -666,6 +658,24 @@ async fn main() -> Result<()> {
                     let chunk_port = entry.value().meta.chunk_port;  // Get from session metadata
                     let socket = entry.value().socket.clone();
                     let crypto = entry.value().crypto.clone();
+                    let contract    = entry.value().meta.contract;
+
+                    // Drop Background if Realtime is active
+                    if has_realtime && matches!(contract, Contract::Background) {
+                        tracing::debug!(%peer_addr, "background chunk suppressed — realtime active");
+                        continue;
+                    }
+
+                    // Check token bucket — drop if rate limited
+                    let allowed = entry.value().bucket.lock().await.allow();
+                    if !allowed {
+                        tracing::debug!(
+                            %peer_addr,
+                            ?contract,
+                            "chunk dropped — rate limited"
+                        );
+                        continue;
+                    }
 
                     // Construct chunk peer address using chunk_port from session
                     let chunk_peer_addr = match peer_addr {

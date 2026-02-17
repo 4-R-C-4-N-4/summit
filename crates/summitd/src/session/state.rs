@@ -1,7 +1,6 @@
 //! Handshake state tracking for the single session listener.
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::net::Ipv6Addr;
 use std::sync::Arc;
 use std::time::Instant;

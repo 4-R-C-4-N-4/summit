@@ -12,6 +12,7 @@ use summit_core::wire::Contract;
 
 mod state;
 pub use state::HandshakeTracker;
+use crate::qos::TokenBucket;
 
 // ── Session Table ─────────────────────────────────────────────────────────────
 
@@ -35,6 +36,7 @@ pub struct ActiveSession {
     pub meta:   SessionMeta,
     pub crypto: Arc<Mutex<Session>>,
     pub socket: Arc<UdpSocket>,  // Dedicated socket for chunk I/O
+    pub bucket: Mutex<TokenBucket>,
 }
 
 /// The session table — shared across all tasks.
