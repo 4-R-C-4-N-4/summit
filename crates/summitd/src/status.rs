@@ -11,9 +11,11 @@ use crate::capability::PeerRegistry;
 
 #[derive(Clone)]
 pub struct StatusState {
-    pub sessions: SessionTable,
-    pub cache:    ChunkCache,
-    pub registry: PeerRegistry,
+    pub sessions:    SessionTable,
+    pub cache:       ChunkCache,
+    pub registry:    PeerRegistry,
+    pub chunk_tx:    tokio::sync::mpsc::UnboundedSender<crate::chunk::OutgoingChunk>,
+    pub reassembler: std::sync::Arc<crate::transfer::FileReassembler>,
 }
 
 // ── /status ──────────────────────────────────────────────────────────────────
@@ -119,6 +121,89 @@ async fn handle_cache_clear(State(state): State<StatusState>) -> Json<ClearRespo
     tracing::info!(cleared, "cache cleared via CLI");
     Json(ClearResponse { cleared })
 }
+// ── /send ─────────────────────────────────────────────────────────────────────
+
+use axum::extract::Multipart;
+
+#[derive(Serialize)]
+pub struct SendResponse {
+    pub filename:     String,
+    pub bytes:        u64,
+    pub chunks_sent:  usize,
+}
+
+async fn handle_send(
+    State(state): State<StatusState>,
+                     mut multipart: Multipart,
+) -> Result<Json<SendResponse>, (axum::http::StatusCode, String)> {
+    use crate::transfer;
+
+    // Extract file from multipart
+    let mut file_data = Vec::new();
+    let mut filename = String::from("uploaded_file");
+
+    while let Some(field) = multipart.next_field().await
+        .map_err(|e| (axum::http::StatusCode::BAD_REQUEST, e.to_string()))?
+        {
+            if let Some(name) = field.file_name() {
+                filename = name.to_string();
+            }
+            let data = field.bytes().await
+            .map_err(|e| (axum::http::StatusCode::BAD_REQUEST, e.to_string()))?;
+            file_data.extend_from_slice(&data);
+        }
+
+        if file_data.is_empty() {
+            return Err((axum::http::StatusCode::BAD_REQUEST, "no file data".to_string()));
+        }
+
+        // Write to temp file
+        let temp_path = std::env::temp_dir().join(&filename);
+        std::fs::write(&temp_path, &file_data)
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        // Chunk the file
+        let chunks = transfer::chunk_file(&temp_path)
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        let bytes = file_data.len() as u64;
+        let chunks_sent = chunks.len();
+
+        // Push all chunks to send queue
+        for chunk in chunks {
+            state.chunk_tx.send(chunk)
+            .map_err(|_| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "send queue closed".to_string()))?;
+        }
+
+        tracing::info!(filename, bytes, chunks_sent, "file queued for sending");
+
+        Ok(Json(SendResponse { filename, bytes, chunks_sent }))
+}
+
+// ── /files ────────────────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct FilesResponse {
+    pub received:    Vec<String>,
+    pub in_progress: Vec<String>,
+}
+
+async fn handle_files(State(state): State<StatusState>) -> Json<FilesResponse> {
+    let received_dir = std::path::PathBuf::from("/tmp/summit-received");
+    let mut received = Vec::new();
+
+    if let Ok(entries) = std::fs::read_dir(&received_dir) {
+        for entry in entries.flatten() {
+            if let Some(name) = entry.file_name().to_str() {
+                received.push(name.to_string());
+            }
+        }
+    }
+
+    let in_progress = state.reassembler.in_progress().await;
+
+    Json(FilesResponse { received, in_progress })
+}
 
 // ── Router ────────────────────────────────────────────────────────────────────
 
@@ -128,6 +213,8 @@ pub async fn serve(state: StatusState, port: u16) -> anyhow::Result<()> {
     .route("/peers",       get(handle_peers))
     .route("/cache",       get(handle_cache))
     .route("/cache/clear", post(handle_cache_clear))
+    .route("/send",        post(handle_send))
+    .route("/files",       get(handle_files))
     .with_state(state);
 
     let listener = TcpListener::bind(format!("127.0.0.1:{}", port)).await?;

@@ -14,6 +14,8 @@ pub enum KnownSchema {
     TextMessage,
     /// summit.file.chunk — arbitrary binary data
     FileChunk,
+    FileData,
+    FileMetadata,
 }
 
 impl KnownSchema {
@@ -59,15 +61,23 @@ impl KnownSchema {
                 // No validation — arbitrary bytes allowed
                 Ok(())
             }
+            Self::FileData => Ok(()),
+            Self::FileMetadata => {
+                serde_json::from_slice::<crate::transfer::FileMetadata>(payload)
+                .context("invalid file metadata JSON")?;
+                Ok(())
+            }
         }
     }
 
     /// Get the schema ID (BLAKE3 hash).
     pub fn id(&self) -> [u8; 32] {
         match self {
-            Self::TestPing => summit_core::crypto::hash(b"summit.test.ping"),
+            Self::TestPing    => summit_core::crypto::hash(b"summit.test.ping"),
             Self::TextMessage => summit_core::crypto::hash(b"summit.message.text"),
-            Self::FileChunk => summit_core::crypto::hash(b"summit.file.chunk"),
+            Self::FileChunk   => summit_core::crypto::hash(b"summit.file.chunk"),
+            Self::FileData    => summit_core::crypto::hash(b"summit.file.data"),
+            Self::FileMetadata => summit_core::crypto::hash(b"summit.file.metadata"),
         }
     }
 
@@ -77,8 +87,36 @@ impl KnownSchema {
             Self::TestPing => "summit.test.ping",
             Self::TextMessage => "summit.message.text",
             Self::FileChunk => "summit.file.chunk",
+            Self::FileData     => "summit.file.data",
+            Self::FileMetadata => "summit.file.metadata",
         }
     }
+
+    pub fn validator(&self) -> Option<Box<dyn Fn(&[u8]) -> bool + Send + Sync>> {
+        match self {
+            Self::TestPing => Some(Box::new(validate_test_ping)),
+            Self::TextMessage => Some(Box::new(validate_text_message)),
+            Self::FileMetadata => Some(Box::new(validate_file_metadata)),
+            Self::FileChunk | Self::FileData => None, // raw bytes, no validation needed
+        }
+    }
+
+    fn validate_file_metadata(payload: &[u8]) -> bool {
+        serde_json::from_slice::<crate::transfer::FileMetadata>(payload).is_ok()
+    }
+}
+// ── Validation functions ──────────────────────────────────────────────────────
+
+fn validate_test_ping(payload: &[u8]) -> bool {
+    std::str::from_utf8(payload).is_ok()
+}
+
+fn validate_text_message(payload: &[u8]) -> bool {
+    std::str::from_utf8(payload).is_ok()
+}
+
+fn validate_file_metadata(payload: &[u8]) -> bool {
+    serde_json::from_slice::<crate::transfer::FileMetadata>(payload).is_ok()
 }
 
 #[cfg(test)]

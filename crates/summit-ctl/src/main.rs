@@ -154,14 +154,96 @@ async fn cmd_cache_clear(port: u16) -> Result<()> {
     Ok(())
 }
 
+async fn cmd_send(port: u16, path: &str) -> Result<()> {
+    use reqwest::multipart;
+
+    let file_data = std::fs::read(path)
+    .with_context(|| format!("failed to read file: {}", path))?;
+
+    let filename = std::path::Path::new(path)
+    .file_name()
+    .and_then(|n| n.to_str())
+    .unwrap_or("file")
+    .to_string();
+
+    let part = multipart::Part::bytes(file_data)
+    .file_name(filename.clone());
+
+    let form = multipart::Form::new()
+    .part("file", part);
+
+    let client = reqwest::Client::new();
+    let resp: SendResponse = client
+    .post(format!("{}/send", base_url(port)))
+    .multipart(form)
+    .send()
+    .await
+    .context("failed to send file to daemon")?
+    .json()
+    .await
+    .context("failed to parse send response")?;
+
+    println!("File queued for sending:");
+    println!("  Filename : {}", resp.filename);
+    println!("  Bytes    : {}", resp.bytes);
+    println!("  Chunks   : {}", resp.chunks_sent);
+
+    Ok(())
+}
+
+async fn cmd_files(port: u16) -> Result<()> {
+    let resp: FilesResponse = get_json(&format!("{}/files", base_url(port))).await?;
+
+    if resp.received.is_empty() && resp.in_progress.is_empty() {
+        println!("No files received yet.");
+        return Ok(());
+    }
+
+    println!("═══════════════════════════════════════");
+    println!("  Received Files");
+    println!("═══════════════════════════════════════");
+
+    if resp.received.is_empty() {
+        println!("  (none)");
+    } else {
+        for file in &resp.received {
+            println!("  ✓ {}", file);
+        }
+    }
+
+    if !resp.in_progress.is_empty() {
+        println!("\n  In Progress:");
+        for file in &resp.in_progress {
+            println!("  ⋯ {}", file);
+        }
+    }
+
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct SendResponse {
+    filename:    String,
+    bytes:       u64,
+    chunks_sent: usize,
+}
+
+#[derive(Deserialize)]
+struct FilesResponse {
+    received:    Vec<String>,
+    in_progress: Vec<String>,
+}
+
 fn print_usage() {
     println!("Usage: summit-ctl [--port <port>] <command>");
     println!();
     println!("Commands:");
-    println!("  status        Show daemon status, sessions, and cache stats");
-    println!("  peers         List discovered peers");
-    println!("  cache         Show cache statistics");
-    println!("  cache clear   Clear the chunk cache");
+    println!("  status          Show daemon status, sessions, and cache stats");
+    println!("  peers           List discovered peers");
+    println!("  cache           Show cache statistics");
+    println!("  cache clear     Clear the chunk cache");
+    println!("  send <file>     Send a file to all peers");
+    println!("  files           List received files");
     println!();
     println!("Options:");
     println!("  --port <port>   Status endpoint port (default: {})", DEFAULT_PORT);
@@ -195,6 +277,8 @@ async fn main() -> Result<()> {
         ["peers"]                          => cmd_peers(port).await,
         ["cache"]                          => cmd_cache(port).await,
         ["cache", "clear"]                 => cmd_cache_clear(port).await,
+        ["send", path]                     => cmd_send(port, path).await,
+        ["files"]                          => cmd_files(port).await,
         ["help"] | ["--help"] | ["-h"]     => { print_usage(); Ok(()) }
         other => {
             eprintln!("Unknown command: {}", other.join(" "));

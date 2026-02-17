@@ -19,11 +19,14 @@ mod schema;
 mod session;
 mod qos;
 mod status;
+mod transfer;
 
 use status::StatusState;
 use cache::ChunkCache;
 use capability::{broadcast, listener, new_registry};
 use session::{new_session_table, ActiveSession, SessionMeta};
+use tokio::sync::mpsc;
+use transfer::FileReassembler;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -554,11 +557,17 @@ async fn main() -> Result<()> {
     // Delivery tracker
     let delivery_tracker = delivery::DeliveryTracker::new();
 
+    // File reassembler - watches incoming chunks, detects file metadata, reassembles
+    let reassembler = Arc::new(FileReassembler::new(
+        std::path::PathBuf::from("/tmp/summit-received")
+    ));
+
     // Spawn chunk send/receive tasks for each active session
     let chunk_manager = {
         let sessions = sessions.clone();
         let cache = cache.clone();
         let tracker = delivery_tracker.clone();
+        let reassembler_ref = reassembler.clone();
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(1));
@@ -566,100 +575,100 @@ async fn main() -> Result<()> {
 
             loop {
                 interval.tick().await;
-                tracing::debug!(session_count = sessions.len(), "chunk manager tick");
 
                 for entry in sessions.iter() {
                     let session_id = *entry.key();
-                    let active = entry.value();
+                    if seen_sessions.insert(session_id) {
+                        let active = entry.value();
+                        tracing::info!(session_id = hex::encode(session_id), "spawning chunk tasks for session");
 
-                    if seen_sessions.contains(&session_id) {
-                        continue;
+                        let peer_addr = active.meta.peer_addr;
+                        let crypto = active.crypto.clone();
+                        let socket = active.socket.clone();
+                        let reassembler = reassembler_ref.clone();
+
+                        // Create channel for received chunks
+                        let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::channel::<chunk::IncomingChunk>(100);
+
+                        // Spawn receiver handler (processes chunks, feeds reassembler)
+                        tokio::spawn(async move {
+                            while let Some(chunk) = chunk_rx.recv().await {
+                                tracing::info!(
+                                    content_hash = hex::encode(chunk.content_hash),
+                                               type_tag = chunk.type_tag,
+                                               payload_len = chunk.payload.len(),
+                                               "chunk received"
+                                );
+
+                                // Handle file metadata chunks (type_tag 3)
+                                if chunk.type_tag == 3 {
+                                    if let Ok(metadata) = serde_json::from_slice::<transfer::FileMetadata>(&chunk.payload) {
+                                        tracing::info!(filename = %metadata.filename, chunks = metadata.chunk_hashes.len(), "file transfer started");
+                                        reassembler.add_metadata(metadata).await;
+                                    }
+                                }
+
+                                // Handle file data chunks (type_tag 2)
+                                if chunk.type_tag == 2 {
+                                    if let Ok(Some(path)) = reassembler.add_chunk(chunk.content_hash, chunk.payload).await {
+                                        tracing::info!(path = %path.display(), "file completed");
+                                    }
+                                }
+                            }
+                        });
+
+                        // Spawn receive loop
+                        let recv_socket = socket.clone();
+                        let recv_crypto = crypto.clone();
+                        let recv_cache = cache.clone();
+                        let recv_tracker = tracker.clone();
+                        let peer_addr_str = peer_addr.to_string();
+
+                        tokio::spawn(async move {
+                            if let Err(e) = chunk::receive::receive_loop(
+                                recv_socket,
+                                recv_crypto,
+                                chunk_tx,
+                                recv_cache,
+                                recv_tracker,
+                                peer_addr_str,
+                            ).await {
+                                tracing::warn!(error = %e, "receive loop terminated");
+                            }
+                        });
                     }
-                    seen_sessions.insert(session_id);
-
-                    tracing::info!(session_id = hex::encode(session_id), "spawning chunk tasks for session");
-
-                    let peer_addr = active.meta.peer_addr;
-                    let crypto = active.crypto.clone();
-                    let socket = active.socket.clone();
-
-                    // Create channel for received chunks
-                    let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::channel::<chunk::IncomingChunk>(100);
-
-                    // Spawn receiver printer (logs received chunks)
-                    tokio::spawn(async move {
-                        while let Some(chunk) = chunk_rx.recv().await {
-                            tracing::info!(
-                                content_hash = hex::encode(chunk.content_hash),
-                                           type_tag = chunk.type_tag,
-                                           payload = %String::from_utf8_lossy(&chunk.payload),
-                                           "RECEIVED CHUNK"
-                            );
-                        }
-                    });
-
-                    // Spawn receive loop
-                    let recv_socket = socket.clone();
-                    let recv_crypto = crypto.clone();
-                    let recv_cache = cache.clone();
-                    let recv_tracker = tracker.clone();
-                    let peer_addr_str = peer_addr.to_string();
-
-                    tokio::spawn(async move {
-                        if let Err(e) = chunk::receive::receive_loop(
-                            recv_socket,
-                            recv_crypto,
-                            chunk_tx,
-                            recv_cache,
-                            recv_tracker,
-                            peer_addr_str,
-                        ).await {
-                            tracing::warn!(error = %e, "receive loop terminated");
-                        }
-                    });
                 }
             }
         })
     };
 
-    // Multipath broadcast sender - sends each chunk to ALL sessions
-    let broadcast_sender = {
+    // Outbound chunk queue - HTTP endpoint pushes, send worker pulls
+    let (chunk_tx, mut chunk_rx) = mpsc::unbounded_channel::<chunk::OutgoingChunk>();
+
+    // Send worker - pulls chunks from queue, applies QoS, sends to all sessions
+    let send_worker = {
         let sessions = sessions.clone();
         let cache = cache.clone();
 
         tokio::spawn(async move {
-            let mut counter = 0u64;
-            let mut interval = tokio::time::interval(Duration::from_secs(2));
-
-            loop {
-                interval.tick().await;
-                counter += 1;
-
+            while let Some(chunk) = chunk_rx.recv().await {
                 let session_count = sessions.len();
                 if session_count == 0 {
-                    tracing::debug!("no sessions, skipping broadcast");
+                    tracing::debug!("no sessions, dropping chunk");
                     continue;
                 }
-
-                let payload = format!("ping #{}", counter);
-                let chunk = chunk::OutgoingChunk {
-                    type_tag:  1,
-                    schema_id: schema::KnownSchema::TestPing.id(),
-                     payload:   bytes::Bytes::from(payload),
-                };
 
                 // Priority check — suppress Background if any Realtime session exists
                 let has_realtime = sessions.iter()
                 .any(|e| matches!(e.value().meta.contract, Contract::Realtime));
 
-
                 let mut send_tasks = Vec::new();
 
                 for entry in sessions.iter() {
-                    let peer_addr = entry.value().meta.peer_addr;
-                    let chunk_port = entry.value().meta.chunk_port;  // Get from session metadata
-                    let socket = entry.value().socket.clone();
-                    let crypto = entry.value().crypto.clone();
+                    let peer_addr   = entry.value().meta.peer_addr;
+                    let chunk_port  = entry.value().meta.chunk_port;
+                    let socket      = entry.value().socket.clone();
+                    let crypto      = entry.value().crypto.clone();
                     let contract    = entry.value().meta.contract;
 
                     // Drop Background if Realtime is active
@@ -668,21 +677,17 @@ async fn main() -> Result<()> {
                         continue;
                     }
 
-                    // Check token bucket — drop if rate limited
+                    // Check token bucket
                     let allowed = entry.value().bucket.lock().await.allow();
                     if !allowed {
-                        tracing::debug!(
-                            %peer_addr,
-                            ?contract,
-                            "chunk dropped — rate limited"
-                        );
+                        tracing::debug!(%peer_addr, ?contract, "chunk dropped — rate limited");
                         continue;
                     }
 
-                    // Construct chunk peer address using chunk_port from session
+                    // Construct chunk peer address
                     let chunk_peer_addr = match peer_addr {
                         std::net::SocketAddr::V6(mut addr) => {
-                            addr.set_port(chunk_port);  // use session's chunk_port
+                            addr.set_port(chunk_port);
                             std::net::SocketAddr::V6(addr)
                         }
                         _ => peer_addr,
@@ -700,11 +705,13 @@ async fn main() -> Result<()> {
                             cache_clone,
                         ).await
                     });
-
                     send_tasks.push(task);
                 }
 
-                // ... rest of broadcast sender
+                // Wait for all sends to complete
+                for task in send_tasks {
+                    let _ = task.await;
+                }
             }
         })
     };
@@ -728,6 +735,8 @@ async fn main() -> Result<()> {
             sessions: sessions.clone(),
             cache:    cache.clone(),
             registry: registry.clone(),
+            chunk_tx:    chunk_tx.clone(),
+            reassembler: reassembler.clone(),
         };
         tokio::spawn(async move {
             if let Err(e) = status::serve(state, status_port).await {
@@ -744,7 +753,7 @@ async fn main() -> Result<()> {
         r = session_initiator   => tracing::error!("session initiator exited: {:?}", r),
         r = session_printer     => tracing::error!("session printer exited: {:?}", r),
         r = chunk_manager       => tracing::error!("chunk manager exited: {:?}", r),
-        r = broadcast_sender    => tracing::error!("broadcast sender exited: {:?}", r),
+        r = send_worker         => tracing::error!("send worker exited: {:?}", r),
         r = stats_printer       => tracing::error!("stats printer exited: {:?}", r),
     }
 
