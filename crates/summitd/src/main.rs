@@ -18,7 +18,9 @@ mod delivery;
 mod schema;
 mod session;
 mod qos;
+mod status;
 
+use status::StatusState;
 use cache::ChunkCache;
 use capability::{broadcast, listener, new_registry};
 use session::{new_session_table, ActiveSession, SessionMeta};
@@ -715,6 +717,21 @@ async fn main() -> Result<()> {
             loop {
                 interval.tick().await;
                 tracker.print_stats();
+            }
+        })
+    };
+
+    // Status HTTP endpoint
+    let status_port = 9001u16;
+    let status_server = {
+        let state = StatusState {
+            sessions: sessions.clone(),
+            cache:    cache.clone(),
+            registry: registry.clone(),
+        };
+        tokio::spawn(async move {
+            if let Err(e) = status::serve(state, status_port).await {
+                tracing::error!(error = %e, "status server failed");
             }
         })
     };
