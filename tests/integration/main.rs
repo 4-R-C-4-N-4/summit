@@ -18,9 +18,8 @@ use anyhow::{Context, Result, bail};
 /// The two namespace names used throughout tests.
 pub const NS_A: &str = "summit-a";
 pub const NS_B: &str = "summit-b";
-pub const VETH_A: &str = "veth-a";
-pub const VETH_B: &str = "veth-b";
-
+pub const VETH_A: &str = "a-veth";
+pub const VETH_B: &str = "b-veth";
 /// Run a command inside a network namespace.
 /// Returns stdout as a String on success, error on non-zero exit.
 pub fn netns_exec(ns: &str, args: &[&str]) -> Result<String> {
@@ -169,4 +168,174 @@ fn test_ping_b_to_a() {
         Err(e)  => panic!("ping6 from summit-b to summit-a failed: {e}"),
     }
     assert!(result.is_ok());
+}
+
+// ── File Transfer Tests ───────────────────────────────────────────────────────
+
+use std::time::Duration;
+use std::thread;
+
+fn summitd_path() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent().unwrap()
+        .parent().unwrap()
+        .join("target/debug/summitd")
+}
+
+fn summit_ctl_path() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent().unwrap()
+        .parent().unwrap()
+        .join("target/debug/summit-ctl")
+}
+
+#[test]
+fn test_file_transfer_two_nodes() {
+    if !netns_available() {
+        eprintln!("SKIP: netns not available");
+        return;
+    }
+    
+    if !summitd_path().exists() || !summit_ctl_path().exists() {
+        eprintln!("SKIP: binaries not built (run: cargo build -p summitd -p summit-ctl)");
+        return;
+    }
+    
+    // Create test file
+    let test_content = "Integration test file transfer";
+    std::fs::write("/tmp/test-integration.txt", test_content).unwrap();
+    
+    // Start daemons in background
+    let mut node_a = Command::new("ip")
+        .args(&["netns", "exec", NS_A])
+        .arg(summitd_path())
+        .arg("a-veth")
+        .env("RUST_LOG", "info")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("failed to start node A");
+    
+    let mut node_b = Command::new("ip")
+        .args(&["netns", "exec", NS_B])
+        .arg(summitd_path())
+        .arg("b-veth")
+        .env("RUST_LOG", "info")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("failed to start node B");
+    
+    // Wait for session establishment
+    thread::sleep(Duration::from_secs(6));
+    
+    // Verify session established before sending
+    let status_check = Command::new("ip")
+    .args(&["netns", "exec", NS_A])
+    .arg(summit_ctl_path())
+    .arg("status")
+    .output()
+    .expect("failed to check status");
+
+    let status_out = String::from_utf8_lossy(&status_check.stdout);
+    if !status_out.contains("Active sessions  : 1") {
+        eprintln!("WARNING: No session established yet. Status output:\n{}", status_out);
+        thread::sleep(Duration::from_secs(5)); // Wait longer
+    }
+
+    // Send file from A
+    let send_result = Command::new("ip")
+        .args(&["netns", "exec", NS_A])
+        .arg(summit_ctl_path())
+        .args(&["send", "/tmp/test-integration.txt"])
+        .output()
+        .expect("failed to send file");
+    
+    assert!(send_result.status.success(), "send failed: {}", 
+            String::from_utf8_lossy(&send_result.stderr));
+    
+    let send_stdout = String::from_utf8_lossy(&send_result.stdout);
+    assert!(send_stdout.contains("File queued"), "unexpected send output: {}", send_stdout);
+    
+    // Wait for transfer
+    thread::sleep(Duration::from_secs(3));
+    
+    // Check files on B
+    let files_result = Command::new("ip")
+        .args(&["netns", "exec", NS_B])
+        .arg(summit_ctl_path())
+        .arg("files")
+        .output()
+        .expect("failed to list files");
+    
+    let files_stdout = String::from_utf8_lossy(&files_result.stdout);
+    assert!(files_stdout.contains("test-integration.txt"), 
+            "file not received: {}", files_stdout);
+    
+    // Verify content
+    let received = std::fs::read_to_string("/tmp/summit-received/test-integration.txt")
+        .expect("received file not found");
+    assert_eq!(received, test_content);
+    
+    println!("✓ File transfer successful");
+    
+    // Cleanup
+    node_a.kill().ok();
+    node_b.kill().ok();
+    std::fs::remove_file("/tmp/test-integration.txt").ok();
+    std::fs::remove_file("/tmp/summit-received/test-integration.txt").ok();
+}
+
+#[test]
+fn test_status_shows_session() {
+    if !netns_available() {
+        eprintln!("SKIP: netns not available");
+        return;
+    }
+    
+    if !summitd_path().exists() || !summit_ctl_path().exists() {
+        eprintln!("SKIP: binaries not built");
+        return;
+    }
+    
+    // Start both nodes
+    let mut node_a = Command::new("ip")
+        .args(&["netns", "exec", NS_A])
+        .arg(summitd_path())
+        .arg("a-veth")
+        .env("RUST_LOG", "error")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("failed to start node A");
+    
+    let mut node_b = Command::new("ip")
+        .args(&["netns", "exec", NS_B])
+        .arg(summitd_path())
+        .arg("b-veth")
+        .env("RUST_LOG", "error")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("failed to start node B");
+    
+    thread::sleep(Duration::from_secs(6));
+    
+    // Check status
+    let status_result = Command::new("ip")
+        .args(&["netns", "exec", NS_A])
+        .arg(summit_ctl_path())
+        .arg("status")
+        .output()
+        .expect("failed to get status");
+    
+    let status_stdout = String::from_utf8_lossy(&status_result.stdout);
+    assert!(status_stdout.contains("Active sessions  : 1"), "status: {}", status_stdout);
+    assert!(status_stdout.contains("Peers discovered : 1"), "status: {}", status_stdout);
+    
+    println!("✓ Status command works");
+    
+    // Cleanup
+    node_a.kill().ok();
+    node_b.kill().ok();
 }
