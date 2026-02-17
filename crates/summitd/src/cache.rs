@@ -135,4 +135,12 @@ impl ChunkCache {
         }
         total
     }
+
+    pub fn clear(&self) {
+        if let Ok(entries) = std::fs::read_dir(&self.root) {
+            for entry in entries.flatten() {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
+    }
 }
