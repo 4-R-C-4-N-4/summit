@@ -13,7 +13,7 @@ use tokio::net::UdpSocket;
 use zerocopy::FromBytes;
 
 use summit_core::wire::{
-    CapabilityAnnouncement, Contract, MULTICAST_ADDR, PEER_TTL_SECS,
+    CapabilityAnnouncement, MULTICAST_ADDR, PEER_TTL_SECS,
 };
 
 use super::{PeerEntry, PeerRegistry};
@@ -27,13 +27,14 @@ pub const ANNOUNCE_PORT: u16 = 9000;
 pub async fn listener_loop(
     registry: PeerRegistry,
     interface_index: u32,
+    local_public_key: [u8; 32],
 ) -> Result<()> {
     let socket = make_listener_socket(interface_index)
-        .context("failed to create multicast listener socket")?;
+    .context("failed to create multicast listener socket")?;
 
     // Convert to tokio UdpSocket for async recv
     let socket = UdpSocket::from_std(socket.into())
-        .context("failed to convert to tokio UdpSocket")?;
+    .context("failed to convert to tokio UdpSocket")?;
 
     let mut buf = vec![0u8; 1024];
 
@@ -48,17 +49,6 @@ pub async fn listener_loop(
             }
         };
 
-        let data = &buf[..len];
-
-        // Attempt to parse as a CapabilityAnnouncement
-        let announcement = match CapabilityAnnouncement::read_from_prefix(data) {
-            Some(a) => a,
-            None => {
-                tracing::trace!(len, "received datagram too short to parse, ignoring");
-                continue;
-            }
-        };
-
         // Extract the sender's IPv6 address
         let sender_addr = match peer_addr {
             std::net::SocketAddr::V6(v6) => *v6.ip(),
@@ -68,32 +58,39 @@ pub async fn listener_loop(
             }
         };
 
-        // Validate contract byte
-        let contract = match Contract::try_from(announcement.contract) {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::trace!(error = %e, "invalid contract byte, ignoring");
-                continue;
+        // Attempt to parse as a CapabilityAnnouncement
+        match CapabilityAnnouncement::read_from_prefix(&buf[..len]) {
+            Some(announcement) => {
+                // Ignore our own announcements
+                if announcement.public_key == local_public_key {
+                    tracing::trace!("ignoring own announcement");
+                    continue;
+                }
+
+                let cap_hash = announcement.capability_hash;
+                let session_port = announcement.session_port;  // copy to avoid alignment issue
+
+                tracing::debug!(
+                    capability = hex::encode(&cap_hash),
+                                addr = %peer_addr,
+                                port = session_port,  // use local copy
+                                "peer discovered"
+                );
+
+                registry.insert(announcement.public_key, PeerEntry {
+                    addr:         sender_addr,
+                    public_key:   announcement.public_key,
+                    session_port: announcement.session_port,
+                    chunk_port:   announcement.chunk_port,
+                    version:      announcement.version,
+                    contract:     announcement.contract,
+                    last_seen:    Instant::now(),
+                });
             }
-        };
-
-        let entry = PeerEntry {
-            addr:         sender_addr,
-            public_key:   announcement.public_key,
-            session_port: u16::from_ne_bytes(announcement.session_port.to_ne_bytes()),
-            version:      u32::from_ne_bytes(announcement.version.to_ne_bytes()),
-            contract,
-            last_seen:    Instant::now(),
-        };
-
-        tracing::debug!(
-            capability = hex::encode(announcement.capability_hash),
-            addr = %sender_addr,
-            port = entry.session_port,
-            "peer discovered"
-        );
-
-        registry.insert(announcement.capability_hash, entry);
+            None => {
+                tracing::trace!("failed to parse capability announcement");
+            }
+        }
     }
 }
 
@@ -125,7 +122,7 @@ fn make_listener_socket(interface_index: u32) -> Result<std::net::UdpSocket> {
 
     socket.set_reuse_address(true).context("SO_REUSEADDR")?;
     socket.set_only_v6(true).context("IPV6_V6ONLY")?;
-    socket.set_nonblocking(true).context("set_nonblocking")?;  // add this line
+    socket.set_nonblocking(true).context("set_nonblocking")?;
 
     let bind_addr = SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, ANNOUNCE_PORT, 0, 0);
     socket.bind(&bind_addr.into()).context("bind()")?;

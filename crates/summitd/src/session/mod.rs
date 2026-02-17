@@ -10,7 +10,8 @@ use tokio::net::UdpSocket;
 use summit_core::crypto::Session;
 use summit_core::wire::Contract;
 
-pub mod handshake;
+mod state;
+pub use state::HandshakeTracker;
 
 // ── Session Table ─────────────────────────────────────────────────────────────
 
@@ -21,6 +22,8 @@ pub struct SessionMeta {
     pub session_id: [u8; 32],
     /// Peer's link-local address.
     pub peer_addr: std::net::SocketAddr,
+    // chunk port from handshake
+    pub chunk_port:     u16,
     /// Latency contract negotiated for this session.
     pub contract: Contract,
     /// When this session was established.

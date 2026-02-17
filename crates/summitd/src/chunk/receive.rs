@@ -1,5 +1,3 @@
-//! Chunk receiving — decrypt, verify, deliver.
-
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
@@ -11,17 +9,19 @@ use zerocopy::FromBytes;
 use summit_core::crypto::{hash, Session};
 use summit_core::wire::ChunkHeader;
 
-use super::IncomingChunk;
-
 use crate::cache::ChunkCache;
+use crate::delivery::DeliveryTracker;
 use crate::schema::KnownSchema;
 
+use super::IncomingChunk;
 
 pub async fn receive_loop(
-    socket:   Arc<UdpSocket>,
-    session:  Arc<Mutex<Session>>,
-    chunk_tx: mpsc::Sender<IncomingChunk>,
-    cache:    ChunkCache,  // NEW
+    socket:    Arc<UdpSocket>,
+    session:   Arc<Mutex<Session>>,
+    chunk_tx:  mpsc::Sender<IncomingChunk>,
+    cache:     ChunkCache,
+    tracker:   DeliveryTracker,  // NEW
+    peer_addr: String,            // NEW
 ) -> Result<()> {
     let mut buf = vec![0u8; 65536 + 1024];
 
@@ -59,7 +59,7 @@ pub async fn receive_loop(
             continue;
         }
 
-        // SCHEMA VALIDATION
+        // Validate schema
         if let Some(schema) = KnownSchema::from_id(&header.schema_id) {
             if let Err(e) = schema.validate(&payload) {
                 tracing::warn!(
@@ -78,10 +78,13 @@ pub async fn receive_loop(
             );
         }
 
+        // Record delivery BEFORE caching (to track all arrivals)
+        tracker.record(header.content_hash, peer_addr.clone());
+        let delivery_count = tracker.delivery_count(&header.content_hash);
+
         // Cache the chunk
         if let Err(e) = cache.put(&header.content_hash, &payload) {
             tracing::warn!(error = %e, "failed to cache chunk");
-            // Continue anyway — caching is best-effort
         }
 
         let incoming = IncomingChunk {
@@ -96,11 +99,22 @@ pub async fn receive_loop(
                        type_tag = incoming.type_tag,
                        payload_len = incoming.payload.len(),
                        cached = true,
+                       delivery_count,  // NEW
+                       peer = %peer_addr,  // NEW
                        "chunk received"
         );
 
-        if chunk_tx.send(incoming).await.is_err() {
-            bail!("chunk receiver dropped, terminating receive loop");
+        // Only deliver to application on FIRST receipt
+        if delivery_count == 1 {
+            if chunk_tx.send(incoming).await.is_err() {
+                bail!("chunk receiver dropped, terminating receive loop");
+            }
+        } else {
+            tracing::debug!(
+                content_hash = hex::encode(incoming.content_hash),
+                            delivery_count,
+                            "duplicate chunk via multipath, deduplicating"
+            );
         }
     }
 }

@@ -66,38 +66,28 @@ assert_eq_size!(ChunkHeader, [u8; 72]);
 /// The source IP address of the datagram is the peer's link-local address —
 /// no address field is needed in the struct itself.
 ///
-/// Wire size: 72 bytes.
+/// Capability announcement — broadcast via multicast to discover peers.
+/// Wire size: 104 bytes
 #[derive(Debug, Clone, AsBytes, FromBytes, FromZeroes)]
 #[repr(C, packed)]
 pub struct CapabilityAnnouncement {
-    /// BLAKE3 hash of the capability descriptor.
-    /// This is the stable identifier for the service being offered.
-    /// Connecting to the wrong peer is cryptographically impossible —
-    /// if the hash does not match, the session does not open.
+    /// BLAKE3 hash of the capability name.
     pub capability_hash: [u8; 32],
-
-    /// Ed25519 public key of the announcing device.
-    /// Used during Noise_XX handshake to verify peer identity.
-    /// Peers seen with the same capability_hash but different public_key
-    /// are treated as distinct peers.
+    /// Ed25519 public key (will be X25519 for Noise).
     pub public_key: [u8; 32],
-
-    /// Monotonically increasing version of this capability.
-    /// Receivers prefer the highest version seen for a given capability_hash.
+    /// Protocol version.
     pub version: u32,
-
-    /// UDP port on which this device accepts session handshake initiation.
+    /// Session handshake port.
     pub session_port: u16,
-
-    /// Latency contract this capability operates under.
-    /// See Contract enum. Must be one of 0x01, 0x02, 0x03.
+    /// Chunk data port (NEW).
+    pub chunk_port: u16,
+    /// Latency contract for this capability.
     pub contract: u8,
-
-    /// Reserved. Must be zero on send. Ignored on receive.
+    /// Reserved for future use.
     pub flags: u8,
 }
 
-assert_eq_size!(CapabilityAnnouncement, [u8; 72]);
+assert_eq_size!(CapabilityAnnouncement, [u8; 74]);
 
 // ── Handshake ─────────────────────────────────────────────────────────────────
 

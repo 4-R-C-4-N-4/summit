@@ -9,7 +9,6 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use dashmap::DashMap;
-use summit_core::wire::Contract;
 
 pub mod broadcast;
 pub mod listener;
@@ -25,18 +24,20 @@ pub struct PeerEntry {
     pub public_key: [u8; 32],
     /// UDP port on which the peer accepts session handshake initiation.
     pub session_port: u16,
+    /// Store chunk port
+    pub chunk_port:   u16,
     /// Capability version — prefer the highest seen for a given capability_hash.
     pub version: u32,
     /// Latency contract this capability operates under.
-    pub contract: Contract,
+    pub contract: u8,
     /// When this entry was last refreshed. Used for TTL expiry.
     pub last_seen: Instant,
 }
 
 /// The peer registry — shared between broadcast, listener, and session tasks.
 ///
-/// Keyed on capability_hash ([u8; 32]).
-/// DashMap gives lock-free reads — multiple tasks can query concurrently.
+/// Keyed on PUBLIC KEY ([u8; 32]) — unique per peer, unlike capability_hash
+/// which is shared by all peers advertising the same capability.
 pub type PeerRegistry = Arc<DashMap<[u8; 32], PeerEntry>>;
 
 /// Create a new empty peer registry.

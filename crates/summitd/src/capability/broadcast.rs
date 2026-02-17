@@ -10,11 +10,10 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use socket2::{Domain, Protocol, Socket, Type};
-use tokio::time;
 use zerocopy::AsBytes;
 
-use summit_core::wire::{CapabilityAnnouncement, MULTICAST_ADDR, ANNOUNCE_INTERVAL_SECS};
-
+use summit_core::crypto::Keypair;
+use summit_core::wire::{CapabilityAnnouncement, Contract, MULTICAST_ADDR};
 /// Broadcast a set of capability announcements on a regular interval.
 ///
 /// Runs forever — cancel by dropping the task handle.
@@ -23,34 +22,48 @@ use summit_core::wire::{CapabilityAnnouncement, MULTICAST_ADDR, ANNOUNCE_INTERVA
 /// * `capabilities` - The announcements to broadcast. All are sent each interval.
 /// * `interface_index` - The OS interface index to bind to (from `if_nametoindex`).
 pub async fn broadcast_loop(
-    capabilities: Arc<Vec<CapabilityAnnouncement>>,
+    keypair:         Arc<Keypair>,
     interface_index: u32,
+    session_port:    u16,
 ) -> Result<()> {
     let socket = make_multicast_socket(interface_index)
         .context("failed to create multicast broadcast socket")?;
+
+    let interval_secs = 2;
+    let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
+
 
     let multicast: Ipv6Addr = MULTICAST_ADDR.parse().unwrap();
     // Port 0 on the destination — recipients bind to a known port in listener.rs
     let dest = SocketAddrV6::new(multicast, 9000, 0, interface_index);
 
-    let mut interval = time::interval(Duration::from_secs(ANNOUNCE_INTERVAL_SECS));
 
     tracing::info!(
         interface_index,
-        count = capabilities.len(),
-        interval_secs = ANNOUNCE_INTERVAL_SECS,
+        count = 1,
+        interval_secs,
         "capability broadcast starting"
     );
 
     loop {
         interval.tick().await;
 
-        for cap in capabilities.iter() {
-            let bytes = cap.as_bytes();
-            match socket.send_to(bytes, &dest.into()) {
-                Ok(n) => tracing::trace!(bytes = n, "broadcast sent"),
-                Err(e) => tracing::warn!(error = %e, "broadcast send failed"),
-            }
+        // Build announcement with ACTUAL ports
+        let announcement = CapabilityAnnouncement {
+            capability_hash: summit_core::crypto::hash(b"summit.test"),
+            public_key:      keypair.public,
+                version:         1,
+                session_port,    // use actual port
+                chunk_port:      0,
+                contract:        Contract::Bulk as u8,
+                flags:           0,
+        };
+        let bytes = announcement.as_bytes();
+
+        // Send once (no loop, we have only 1 capability)
+        match socket.send_to(bytes, &dest.into()) {
+            Ok(n) => tracing::trace!(bytes = n, "broadcast sent"),
+            Err(e) => tracing::warn!(error = %e, "broadcast send failed"),
         }
     }
 }
