@@ -29,6 +29,7 @@ pub struct SessionMeta {
     pub contract: Contract,
     /// When this session was established.
     pub established_at: Instant,
+    pub peer_pubkey:    [u8; 32],
 }
 
 /// An active session — crypto state, metadata, and dedicated I/O socket.

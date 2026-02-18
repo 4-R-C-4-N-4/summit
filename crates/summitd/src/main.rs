@@ -20,7 +20,11 @@ mod session;
 mod qos;
 mod status;
 mod transfer;
+mod trust;
+mod send_target;
 
+use trust::{TrustRegistry, TrustLevel, UntrustedBuffer};
+use send_target::SendTarget;
 use status::StatusState;
 use cache::ChunkCache;
 use capability::{broadcast, listener, new_registry};
@@ -146,6 +150,7 @@ async fn main() -> Result<()> {
         let sessions            = sessions.clone();
         let tracker             = handshake_tracker.clone();
         let local_addr          = local_link_addr;
+        let registry_ref = registry.clone();
 
         tokio::spawn(async move {
             use zerocopy::FromBytes;
@@ -246,7 +251,13 @@ async fn main() -> Result<()> {
                             }
                             tracing::debug!(peer_addr = %peer_addr, "sent HandshakeResponse");
 
-                            tracker.lock().await.add_responder(peer_ip, pending, local_chunk_port, chunk_socket);
+                            // Look up peer's public key from registry_ref
+                            let peer_pubkey = registry_ref.iter()
+                            .find(|entry| entry.value().addr == peer_ip)
+                            .map(|entry| *entry.key())
+                            .unwrap_or([0u8; 32]);
+
+                            tracker.lock().await.add_responder(peer_ip, peer_pubkey, pending, local_chunk_port, chunk_socket);
 
                         } else if len == HANDSHAKE_RESPONSE_SIZE {
                             let response = match HandshakeResponse::read_from(data) {
@@ -304,7 +315,7 @@ async fn main() -> Result<()> {
                             tracing::debug!(peer_addr = %peer_addr, "sent chunk_port (initiator)");
 
                             tracker.lock().await.add_initiator_waiting_chunk(
-                                peer_ip, session, state.chunk_socket, state.chunk_socket_port
+                                peer_ip, session, state.chunk_socket, state.chunk_socket_port, state.peer_pubkey
                             );
 
                         } else if len == HANDSHAKE_COMPLETE_SIZE {
@@ -331,7 +342,7 @@ async fn main() -> Result<()> {
                             tracing::debug!(peer_addr = %peer_addr, "noise handshake complete (responder), waiting for chunk_port");
 
                             tracker.lock().await.add_responder_waiting_chunk(
-                                peer_ip, session, state.chunk_socket, state.chunk_socket_port
+                                peer_ip, session, state.chunk_socket, state.chunk_socket_port, state.peer_pubkey
                             );
 
                         } else {
@@ -361,6 +372,7 @@ async fn main() -> Result<()> {
                                         chunk_port: peer_chunk_port,
                                         contract: Contract::Bulk,
                                         established_at: std::time::Instant::now(),
+                                        peer_pubkey: state.peer_pubkey,
                                     },
                                     crypto: Arc::new(Mutex::new(state.session)),
                                     socket: state.chunk_socket,
@@ -406,6 +418,7 @@ async fn main() -> Result<()> {
                                         chunk_port: peer_chunk_port,
                                         contract: Contract::Bulk,
                                         established_at: std::time::Instant::now(),
+                                        peer_pubkey: state.peer_pubkey,
                                     },
                                     crypto: Arc::new(Mutex::new(state.session)),
                                     socket: state.chunk_socket,
@@ -530,7 +543,13 @@ async fn main() -> Result<()> {
 
                     let peer_ip = entry.addr;
                     // Track this initiated handshake
-                    tracker.lock().await.add_initiator(peer_ip, noise, chunk_socket, local_chunk_port);
+                    tracker.lock().await.add_initiator(
+                        peer_ip,
+                        peer_pubkey,
+                        noise,
+                        chunk_socket,
+                        local_chunk_port
+                    );
                 }
             }
         })
@@ -562,12 +581,18 @@ async fn main() -> Result<()> {
         std::path::PathBuf::from("/tmp/summit-received")
     ));
 
+    // Trust registry and untrusted chunk buffer
+    let trust_registry = TrustRegistry::new();
+    let untrusted_buffer = UntrustedBuffer::new();
+
     // Spawn chunk send/receive tasks for each active session
     let chunk_manager = {
         let sessions = sessions.clone();
         let cache = cache.clone();
         let tracker = delivery_tracker.clone();
         let reassembler_ref = reassembler.clone();
+        let trust_ref = trust_registry.clone();
+        let buffer_ref = untrusted_buffer.clone();
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(1));
@@ -586,6 +611,9 @@ async fn main() -> Result<()> {
                         let crypto = active.crypto.clone();
                         let socket = active.socket.clone();
                         let reassembler = reassembler_ref.clone();
+                        let peer_pubkey = active.meta.peer_pubkey;
+                        let trust = trust_ref.clone();
+                        let buffer = buffer_ref.clone();
 
                         // Create channel for received chunks
                         let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::channel::<chunk::IncomingChunk>(100);
@@ -593,6 +621,29 @@ async fn main() -> Result<()> {
                         // Spawn receiver handler (processes chunks, feeds reassembler)
                         tokio::spawn(async move {
                             while let Some(chunk) = chunk_rx.recv().await {
+                                // Check trust level BEFORE processing
+                                match trust.check(&peer_pubkey) {
+                                    TrustLevel::Blocked => {
+                                        tracing::debug!(
+                                            peer = hex::encode(peer_pubkey),
+                                                        "chunk from blocked peer, dropping"
+                                        );
+                                        continue;
+                                    }
+                                    TrustLevel::Untrusted => {
+                                        tracing::info!(
+                                            peer = hex::encode(&peer_pubkey[..8]),
+                                                       content_hash = hex::encode(&chunk.content_hash[..8]),
+                                                       "chunk from untrusted peer, buffering"
+                                        );
+                                        buffer.add(peer_pubkey, chunk.content_hash, chunk.payload);
+                                        continue;
+                                    }
+                                    TrustLevel::Trusted => {
+                                        // Process normally - continue below
+                                    }
+                                }
+
                                 tracing::info!(
                                     content_hash = hex::encode(chunk.content_hash),
                                                type_tag = chunk.type_tag,
@@ -643,33 +694,63 @@ async fn main() -> Result<()> {
     };
 
     // Outbound chunk queue - HTTP endpoint pushes, send worker pulls
-    let (chunk_tx, mut chunk_rx) = mpsc::unbounded_channel::<chunk::OutgoingChunk>();
+    let (chunk_tx, mut chunk_rx) = mpsc::unbounded_channel::<(SendTarget, chunk::OutgoingChunk)>();
 
     // Send worker - pulls chunks from queue, applies QoS, sends to all sessions
     let send_worker = {
         let sessions = sessions.clone();
         let cache = cache.clone();
+        let trust = trust_registry.clone();
 
         tokio::spawn(async move {
-            while let Some(chunk) = chunk_rx.recv().await {
-                let session_count = sessions.len();
-                if session_count == 0 {
-                    tracing::debug!("no sessions, dropping chunk");
+            while let Some((target, chunk)) = chunk_rx.recv().await {
+                // Determine which sessions to send to based on target
+                let target_sessions: Vec<[u8; 32]> = match &target {
+                    SendTarget::Broadcast => {
+                        // Collect session IDs of trusted peers
+                        sessions.iter()
+                        .filter(|e| trust.check(&e.value().meta.peer_pubkey) == TrustLevel::Trusted)
+                        .map(|e| *e.key())
+                        .collect()
+                    }
+                    SendTarget::Peer { public_key } => {
+                        // Find session ID for this peer
+                        sessions.iter()
+                        .find(|e| e.value().meta.peer_pubkey == *public_key)
+                        .map(|e| vec![*e.key()])
+                        .unwrap_or_default()
+                    }
+                    SendTarget::Session { session_id } => {
+                        // Direct session send
+                        if sessions.contains_key(session_id) {
+                            vec![*session_id]
+                        } else {
+                            vec![]
+                        }
+                    }
+                };
+
+                if target_sessions.is_empty() {
+                    tracing::debug!(?target, "no target sessions found");
                     continue;
                 }
 
-                // Priority check — suppress Background if any Realtime session exists
+                // Priority check
                 let has_realtime = sessions.iter()
                 .any(|e| matches!(e.value().meta.contract, Contract::Realtime));
 
                 let mut send_tasks = Vec::new();
 
-                for entry in sessions.iter() {
-                    let peer_addr   = entry.value().meta.peer_addr;
-                    let chunk_port  = entry.value().meta.chunk_port;
-                    let socket      = entry.value().socket.clone();
-                    let crypto      = entry.value().crypto.clone();
-                    let contract    = entry.value().meta.contract;
+
+                for session_id in target_sessions {
+                    let session = match sessions.get(&session_id) {
+                        Some(s) => s,
+                     None => continue,
+                    };                    let peer_addr = session.meta.peer_addr;
+                    let chunk_port = session.meta.chunk_port;
+                    let socket = session.value().socket.clone();
+                    let crypto = session.value().crypto.clone();
+                    let contract = session.meta.contract;
 
                     // Drop Background if Realtime is active
                     if has_realtime && matches!(contract, Contract::Background) {
@@ -678,7 +759,7 @@ async fn main() -> Result<()> {
                     }
 
                     // Check token bucket
-                    let allowed = entry.value().bucket.lock().await.allow();
+                    let allowed = session.bucket.lock().await.allow();
                     if !allowed {
                         tracing::debug!(%peer_addr, ?contract, "chunk dropped — rate limited");
                         continue;
@@ -737,6 +818,8 @@ async fn main() -> Result<()> {
             registry: registry.clone(),
             chunk_tx:    chunk_tx.clone(),
             reassembler: reassembler.clone(),
+            trust:            trust_registry.clone(),
+            untrusted_buffer: untrusted_buffer.clone(),
         };
         tokio::spawn(async move {
             if let Err(e) = status::serve(state, status_port).await {

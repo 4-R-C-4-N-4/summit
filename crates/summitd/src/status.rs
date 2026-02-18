@@ -8,14 +8,18 @@ use tokio::net::TcpListener;
 use crate::session::SessionTable;
 use crate::cache::ChunkCache;
 use crate::capability::PeerRegistry;
+use crate::trust::{TrustRegistry, TrustLevel, UntrustedBuffer};
+use crate::send_target::SendTarget;
 
 #[derive(Clone)]
 pub struct StatusState {
-    pub sessions:    SessionTable,
-    pub cache:       ChunkCache,
-    pub registry:    PeerRegistry,
-    pub chunk_tx:    tokio::sync::mpsc::UnboundedSender<crate::chunk::OutgoingChunk>,
-    pub reassembler: std::sync::Arc<crate::transfer::FileReassembler>,
+    pub sessions:         SessionTable,
+    pub cache:            ChunkCache,
+    pub registry:         PeerRegistry,
+    pub chunk_tx:         tokio::sync::mpsc::UnboundedSender<(SendTarget, crate::chunk::OutgoingChunk)>,
+    pub reassembler:      std::sync::Arc<crate::transfer::FileReassembler>,
+    pub trust:            TrustRegistry,
+    pub untrusted_buffer: UntrustedBuffer,
 }
 
 // ── /status ──────────────────────────────────────────────────────────────────
@@ -31,9 +35,11 @@ pub struct StatusResponse {
 pub struct SessionInfo {
     pub session_id:       String,
     pub peer:             String,
+    pub peer_pubkey:      String,
     pub contract:         String,
     pub chunk_port:       u16,
     pub established_secs: u64,
+    pub trust_level:      String,
 }
 
 #[derive(Serialize)]
@@ -45,12 +51,15 @@ pub struct CacheInfo {
 async fn handle_status(State(state): State<StatusState>) -> Json<StatusResponse> {
     let sessions = state.sessions.iter().map(|e| {
         let meta = &e.value().meta;
+        let trust_level = state.trust.check(&meta.peer_pubkey);
         SessionInfo {
             session_id:       hex::encode(meta.session_id),
                                              peer:             meta.peer_addr.to_string(),
+                                             peer_pubkey:      hex::encode(meta.peer_pubkey),
                                              contract:         format!("{:?}", meta.contract),
                                              chunk_port:       meta.chunk_port,
                                              established_secs: meta.established_at.elapsed().as_secs(),
+                                             trust_level:      format!("{:?}", trust_level),
         }
     }).collect();
 
@@ -73,26 +82,34 @@ pub struct PeersResponse {
 
 #[derive(Serialize)]
 pub struct PeerInfo {
-    pub public_key:   String,
-    pub addr:         String,
-    pub session_port: u16,
-    pub chunk_port:   u16,
-    pub contract:     u8,
-    pub version:      u32,
-    pub last_seen_secs: u64,
+    pub public_key:      String,
+    pub addr:            String,
+    pub session_port:    u16,
+    pub chunk_port:      u16,
+    pub contract:        u8,
+    pub version:         u32,
+    pub last_seen_secs:  u64,
+    pub trust_level:     String,
+    pub buffered_chunks: usize,
 }
 
 async fn handle_peers(State(state): State<StatusState>) -> Json<PeersResponse> {
     let peers = state.registry.iter().map(|e| {
         let p = e.value();
+        let pubkey = *e.key();
+        let trust_level = state.trust.check(&pubkey);
+        let buffered_chunks = state.untrusted_buffer.count(&pubkey);
+
         PeerInfo {
-            public_key:     hex::encode(p.public_key),
-                addr:           p.addr.to_string(),
-                                          session_port:   p.session_port,
-                                          chunk_port:     p.chunk_port,
-                                          contract:       p.contract,
-                                          version:        p.version,
-                                          last_seen_secs: p.last_seen.elapsed().as_secs(),
+            public_key:      hex::encode(p.public_key),
+                addr:            p.addr.to_string(),
+                                          session_port:    p.session_port,
+                                          chunk_port:      p.chunk_port,
+                                          contract:        p.contract,
+                                          version:         p.version,
+                                          last_seen_secs:  p.last_seen.elapsed().as_secs(),
+                                          trust_level:     format!("{:?}", trust_level),
+                                          buffered_chunks,
         }
     }).collect();
 
@@ -121,15 +138,22 @@ async fn handle_cache_clear(State(state): State<StatusState>) -> Json<ClearRespo
     tracing::info!(cleared, "cache cleared via CLI");
     Json(ClearResponse { cleared })
 }
+
 // ── /send ─────────────────────────────────────────────────────────────────────
 
 use axum::extract::Multipart;
 
 #[derive(Serialize)]
 pub struct SendResponse {
-    pub filename:     String,
-    pub bytes:        u64,
-    pub chunks_sent:  usize,
+    pub filename:    String,
+    pub bytes:       u64,
+    pub chunks_sent: usize,
+}
+
+#[derive(Deserialize)]
+pub struct SendRequest {
+    #[serde(default)]
+    pub target: SendTarget,
 }
 
 async fn handle_send(
@@ -138,19 +162,29 @@ async fn handle_send(
 ) -> Result<Json<SendResponse>, (axum::http::StatusCode, String)> {
     use crate::transfer;
 
-    // Extract file from multipart
+    // Extract file and optional target from multipart
     let mut file_data = Vec::new();
     let mut filename = String::from("uploaded_file");
+    let mut target = SendTarget::Broadcast;
 
     while let Some(field) = multipart.next_field().await
         .map_err(|e| (axum::http::StatusCode::BAD_REQUEST, e.to_string()))?
         {
-            if let Some(name) = field.file_name() {
-                filename = name.to_string();
+            let field_name = field.name().unwrap_or("").to_string();
+
+            if field_name == "target" {
+                let target_str = field.text().await
+                .map_err(|e| (axum::http::StatusCode::BAD_REQUEST, e.to_string()))?;
+                target = serde_json::from_str(&target_str)
+                .map_err(|e| (axum::http::StatusCode::BAD_REQUEST, e.to_string()))?;
+            } else {
+                if let Some(name) = field.file_name() {
+                    filename = name.to_string();
+                }
+                let data = field.bytes().await
+                .map_err(|e| (axum::http::StatusCode::BAD_REQUEST, e.to_string()))?;
+                file_data.extend_from_slice(&data);
             }
-            let data = field.bytes().await
-            .map_err(|e| (axum::http::StatusCode::BAD_REQUEST, e.to_string()))?;
-            file_data.extend_from_slice(&data);
         }
 
         if file_data.is_empty() {
@@ -169,13 +203,13 @@ async fn handle_send(
         let bytes = file_data.len() as u64;
         let chunks_sent = chunks.len();
 
-        // Push all chunks to send queue
+        // Push all chunks to send queue with target
         for chunk in chunks {
-            state.chunk_tx.send(chunk)
+            state.chunk_tx.send((target.clone(), chunk))
             .map_err(|_| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "send queue closed".to_string()))?;
         }
 
-        tracing::info!(filename, bytes, chunks_sent, "file queued for sending");
+        tracing::info!(filename, bytes, chunks_sent, ?target, "file queued for sending");
 
         Ok(Json(SendResponse { filename, bytes, chunks_sent }))
 }
@@ -205,16 +239,138 @@ async fn handle_files(State(state): State<StatusState>) -> Json<FilesResponse> {
     Json(FilesResponse { received, in_progress })
 }
 
+// ── /trust ────────────────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct TrustListResponse {
+    pub rules: Vec<TrustRule>,
+}
+
+#[derive(Serialize)]
+pub struct TrustRule {
+    pub public_key: String,
+    pub level:      String,
+}
+
+async fn handle_trust_list(State(state): State<StatusState>) -> Json<TrustListResponse> {
+    let rules = state.trust.list().into_iter().map(|(pubkey, level)| {
+        TrustRule {
+            public_key: hex::encode(pubkey),
+                level:      format!("{:?}", level),
+        }
+    }).collect();
+
+    Json(TrustListResponse { rules })
+}
+
+#[derive(Deserialize)]
+pub struct TrustAddRequest {
+    pub public_key: String,
+}
+
+#[derive(Serialize)]
+pub struct TrustAddResponse {
+    pub public_key:      String,
+    pub flushed_chunks:  usize,
+}
+
+async fn handle_trust_add(
+    State(state): State<StatusState>,
+                          Json(req): Json<TrustAddRequest>,
+) -> Result<Json<TrustAddResponse>, (axum::http::StatusCode, String)> {
+    let pubkey_bytes = hex::decode(&req.public_key)
+    .map_err(|_| (axum::http::StatusCode::BAD_REQUEST, "invalid hex".to_string()))?;
+
+    if pubkey_bytes.len() != 32 {
+        return Err((axum::http::StatusCode::BAD_REQUEST, "public key must be 32 bytes".to_string()));
+    }
+
+    let mut pubkey = [0u8; 32];
+    pubkey.copy_from_slice(&pubkey_bytes);
+
+    // Mark as trusted
+    state.trust.trust(pubkey);
+
+    // Flush buffered chunks
+    let buffered = state.untrusted_buffer.flush(&pubkey);
+    let flushed_chunks = buffered.len();
+
+    // TODO: Process flushed chunks through reassembler
+
+    Ok(Json(TrustAddResponse {
+        public_key: req.public_key,
+            flushed_chunks,
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct TrustBlockRequest {
+    pub public_key: String,
+}
+
+#[derive(Serialize)]
+pub struct TrustBlockResponse {
+    pub public_key: String,
+}
+
+async fn handle_trust_block(
+    State(state): State<StatusState>,
+                            Json(req): Json<TrustBlockRequest>,
+) -> Result<Json<TrustBlockResponse>, (axum::http::StatusCode, String)> {
+    let pubkey_bytes = hex::decode(&req.public_key)
+    .map_err(|_| (axum::http::StatusCode::BAD_REQUEST, "invalid hex".to_string()))?;
+
+    if pubkey_bytes.len() != 32 {
+        return Err((axum::http::StatusCode::BAD_REQUEST, "public key must be 32 bytes".to_string()));
+    }
+
+    let mut pubkey = [0u8; 32];
+    pubkey.copy_from_slice(&pubkey_bytes);
+
+    state.trust.block(pubkey);
+    state.untrusted_buffer.clear(&pubkey);
+
+    Ok(Json(TrustBlockResponse {
+        public_key: req.public_key,
+    }))
+}
+
+#[derive(Serialize)]
+pub struct TrustPendingResponse {
+    pub peers: Vec<PendingPeer>,
+}
+
+#[derive(Serialize)]
+pub struct PendingPeer {
+    pub public_key:     String,
+    pub buffered_chunks: usize,
+}
+
+async fn handle_trust_pending(State(state): State<StatusState>) -> Json<TrustPendingResponse> {
+    let peers = state.untrusted_buffer.peers().into_iter().map(|(pubkey, count)| {
+        PendingPeer {
+            public_key:      hex::encode(pubkey),
+                buffered_chunks: count,
+        }
+    }).collect();
+
+    Json(TrustPendingResponse { peers })
+}
+
 // ── Router ────────────────────────────────────────────────────────────────────
 
 pub async fn serve(state: StatusState, port: u16) -> anyhow::Result<()> {
     let app = Router::new()
-    .route("/status",      get(handle_status))
-    .route("/peers",       get(handle_peers))
-    .route("/cache",       get(handle_cache))
-    .route("/cache/clear", post(handle_cache_clear))
-    .route("/send",        post(handle_send))
-    .route("/files",       get(handle_files))
+    .route("/status",        get(handle_status))
+    .route("/peers",         get(handle_peers))
+    .route("/cache",         get(handle_cache))
+    .route("/cache/clear",   post(handle_cache_clear))
+    .route("/send",          post(handle_send))
+    .route("/files",         get(handle_files))
+    .route("/trust",         get(handle_trust_list))
+    .route("/trust/add",     post(handle_trust_add))
+    .route("/trust/block",   post(handle_trust_block))
+    .route("/trust/pending", get(handle_trust_pending))
     .with_state(state);
 
     let listener = TcpListener::bind(format!("127.0.0.1:{}", port)).await?;
