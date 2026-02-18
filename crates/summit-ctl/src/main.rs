@@ -245,7 +245,7 @@ async fn cmd_cache_clear(port: u16) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_send(port: u16, path: &str) -> Result<()> {
+async fn cmd_send(port: u16, path: &str, target_peer: Option<&str>, target_session: Option<&str>) -> Result<()> {
     use reqwest::multipart;
 
     let file_data = std::fs::read(path)
@@ -260,8 +260,29 @@ async fn cmd_send(port: u16, path: &str) -> Result<()> {
     let part = multipart::Part::bytes(file_data)
     .file_name(filename.clone());
 
+    // Build target JSON
+    let target_json = if let Some(peer) = target_peer {
+        serde_json::json!({
+            "type": "peer",
+            "public_key": peer
+        })
+    } else if let Some(session) = target_session {
+        serde_json::json!({
+            "type": "session",
+            "session_id": session
+        })
+    } else {
+        serde_json::json!({
+            "type": "broadcast"
+        })
+    };
+
+    let target_part = multipart::Part::text(target_json.to_string())
+    .mime_str("application/json")?;
+
     let form = multipart::Form::new()
-    .part("file", part);
+    .part("file", part)
+    .part("target", target_part);
 
     let client = reqwest::Client::new();
     let resp: SendResponse = client
@@ -274,7 +295,15 @@ async fn cmd_send(port: u16, path: &str) -> Result<()> {
     .await
     .context("failed to parse send response")?;
 
-    println!("File queued for sending:");
+    let target_desc = if target_peer.is_some() {
+        "to peer"
+    } else if target_session.is_some() {
+        "to session"
+    } else {
+        "to all trusted peers (broadcast)"
+    };
+
+    println!("File queued for sending {}:", target_desc);
     println!("  Filename : {}", resp.filename);
     println!("  Bytes    : {}", resp.bytes);
     println!("  Chunks   : {}", resp.chunks_sent);
@@ -400,7 +429,10 @@ fn print_usage() {
     println!("  peers               List discovered peers with trust status");
     println!("  cache               Show cache statistics");
     println!("  cache clear         Clear the chunk cache");
-    println!("  send <file>         Send a file to all trusted peers");
+    println!("  send <file> [options]");
+    println!("                      Send a file (broadcast to all trusted peers by default)");
+    println!("    --peer <pubkey>   Send to specific peer");
+    println!("    --session <id>    Send to specific session");
     println!("  files               List received files");
     println!("  trust list          Show trust rules");
     println!("  trust add <pubkey>  Trust a peer (process buffered chunks)");
@@ -415,6 +447,8 @@ fn print_usage() {
     println!("  summit-ctl peers");
     println!("  summit-ctl trust add 5c8c7d3c9eff6572...");
     println!("  summit-ctl send document.pdf");
+    println!("  summit-ctl send photo.jpg --peer 99b1db0b1849c7f8...");
+    println!("  summit-ctl send report.pdf --session 5441b43445712d95...");
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -425,7 +459,7 @@ async fn main() -> Result<()> {
 
     // Parse --port option
     let mut port = DEFAULT_PORT;
-    let mut remaining: Vec<&str> = Vec::new();
+    let mut remaining: Vec<String> = Vec::new();
     let mut i = 0;
     while i < args.len() {
         if args[i] == "--port" {
@@ -435,17 +469,46 @@ async fn main() -> Result<()> {
             .parse()
             .context("--port must be a number")?;
         } else {
-            remaining.push(&args[i]);
+            remaining.push(args[i].clone());
         }
         i += 1;
     }
 
-    match remaining.as_slice() {
+    // Convert to string slices for matching
+    let remaining_refs: Vec<&str> = remaining.iter().map(|s| s.as_str()).collect();
+
+    // Handle send command with optional targeting
+    if remaining_refs.first() == Some(&"send") && remaining_refs.len() >= 2 {
+        let path = remaining_refs[1];
+        let mut target_peer = None;
+        let mut target_session = None;
+
+        let mut i = 2;
+        while i < remaining_refs.len() {
+            match remaining_refs[i] {
+                "--peer" => {
+                    i += 1;
+                    target_peer = remaining_refs.get(i).copied(); // Add .copied()
+                }
+                "--session" => {
+                    i += 1;
+                    target_session = remaining_refs.get(i).copied(); // Add .copied()
+                }
+                _ => {
+                    anyhow::bail!("Unknown option: {}", remaining_refs[i]);
+                }
+            }
+            i += 1;
+        }
+
+        return cmd_send(port, path, target_peer, target_session).await;
+    }
+
+    match remaining_refs.as_slice() {
         ["status"] | []                       => cmd_status(port).await,
         ["peers"]                             => cmd_peers(port).await,
         ["cache"]                             => cmd_cache(port).await,
         ["cache", "clear"]                    => cmd_cache_clear(port).await,
-        ["send", path]                        => cmd_send(port, path).await,
         ["files"]                             => cmd_files(port).await,
         ["trust", "list"] | ["trust"]         => cmd_trust_list(port).await,
         ["trust", "add", pubkey]              => cmd_trust_add(port, pubkey).await,
