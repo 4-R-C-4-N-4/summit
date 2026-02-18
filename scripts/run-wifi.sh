@@ -11,11 +11,12 @@ echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━
 echo -e "${GREEN}Summit Protocol - WiFi Interface${NC}"
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
-# Find WiFi interface
-WIFI_IFACE=$(ip link show | grep -E "wl[a-z0-9]+" | awk -F: '{print $2}' | tr -d ' ' | head -1)
 
-if [ -z "$WIFI_IFACE" ]; then
-    echo -e "${RED}ERROR: No WiFi interface found${NC}"
+# Auto-detect WiFi interface
+WIFI_IFACE=$(./scripts/detect-wifi.sh)
+
+if [ $? -ne 0 ]; then
+    echo -e "${RED}ERROR: $WIFI_IFACE${NC}"
     echo "Available interfaces:"
     ip link show
     exit 1

@@ -19,42 +19,162 @@ Summit is a high-performance P2P protocol built for reliable file transfer acros
 - **CLI tool** (`summit-ctl`) for user interaction
 
 ---
-
 ## Quick Start
 
 ### Prerequisites
+- Linux (tested on Arch, Ubuntu, Fedora)
+- WiFi interface (or Ethernet for wired testing)
+- 512MB RAM minimum
+- Internet connection for initial setup
 
-- Linux (tested on Ubuntu 24)
-- Rust 1.83+ with 2024 edition support
-- Root access for network namespace tests
+### Installation (Arch Linux)
 
-### Build
-
+**clone and install:**
 ```bash
-cargo build --release
+git clone https://github.com/4-r-c-4-n-4/summit.git
+cd summit
+sudo ./docs/install/install-arch.sh
 ```
+
+This installs:
+- ✅ All system dependencies (Rust, Node.js, network tools)
+- ✅ Summit binaries (`summitd`, `summit-ctl`)
+- ✅ Systemd service for auto-start
+- ✅ WiFi interface auto-detection
+
+**Other distros:** See `docs/DEPENDENCIES.md`
+
+---
+
+### Run Summit
+
+**Option 1: Systemd (recommended)**
+```bash
+# Start now
+sudo systemctl start summit
+
+# Enable on boot
+sudo systemctl enable summit
+
+# Check status
+systemctl status summit
+```
+
+**Option 2: Manual run**
+```bash
+# Auto-detects WiFi interface
+./scripts/run-wifi.sh
+
+# Or specify interface manually
+sudo summitd wlp5s0
+```
+
+**Access Web UI:**
+- Open browser: **http://127.0.0.1:9001**
+- API endpoint: **http://127.0.0.1:9001/api/status**
+
+---
 
 ### Basic Usage
 
-**Terminal 1 — Start daemon:**
+**Send a file:**
 ```bash
-sudo ./target/release/summitd eth0
+summit-ctl send myfile.pdf
+# Broadcasts to all trusted peers
 ```
 
-**Terminal 2 — Send a file:**
+**Trust a peer:**
 ```bash
-./target/release/summit-ctl send myfile.pdf
+# List discovered peers
+summit-ctl peers
+
+# Trust by public key
+summit-ctl trust add <public-key>
 ```
 
-**Terminal 3 — Check status:**
+**Check status:**
 ```bash
-./target/release/summit-ctl status
-./target/release/summit-ctl files
+summit-ctl status          # Show sessions and cache
+summit-ctl files           # List received files
+summit-ctl trust pending   # See buffered chunks
 ```
 
-Files are automatically received and reassembled in `/tmp/summit-received/`.
+**Files automatically appear in:**
+```bash
+/tmp/summit-received/
+```
 
 ---
+
+### Two-Machine Setup
+
+**Machine 1:**
+```bash
+sudo ./docs/install/install-arch.sh
+sudo systemctl start summit
+summit-ctl status  # Note your public key
+```
+
+**Machine 2:**
+```bash
+sudo ./docs/install/install-arch.sh
+sudo systemctl start summit
+summit-ctl peers   # Should see Machine 1
+
+# Trust Machine 1
+summit-ctl trust add <machine1-pubkey>
+
+# Send a file to Machine 1
+summit-ctl send hello.txt
+```
+
+**Machine 1:**
+```bash
+# Trust Machine 2
+summit-ctl trust add <machine2-pubkey>
+
+# Check received files
+summit-ctl files
+ls /tmp/summit-received/
+```
+
+**Both machines must trust each other** for file transfer to work (mutual trust required).
+
+---
+
+### Development Build
+
+**Build from source with UI:**
+```bash
+./scripts/build-astral.sh
+./scripts/run-wifi.sh
+```
+
+**Build without UI:**
+```bash
+cargo build --release -p summitd
+cargo build --release -p summit-ctl
+sudo ./target/release/summitd wlp5s0
+```
+
+---
+
+### Quick Troubleshooting
+
+**No peers discovered:**
+- Both machines on same WiFi network?
+- Firewall blocking UDP port 9000?
+- IPv6 enabled? (`sysctl net.ipv6.conf.all.disable_ipv6` should be 0)
+
+**File not received:**
+- Both peers trusted each other? (`summit-ctl trust list`)
+- Check buffered chunks: `summit-ctl trust pending`
+
+**Can't access Web UI:**
+- Daemon running? `systemctl status summit`
+- Port 9001 blocked? `sudo lsof -i :9001`
+
+See `docs/DEPENDENCIES.md` for full troubleshooting guide.
 
 ## Architecture
 
