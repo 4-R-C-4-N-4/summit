@@ -24,3 +24,7 @@ target
 # Added by cargo
 
 /target
+
+# React Astral
+astral/dist/
+astral/node_modules/
