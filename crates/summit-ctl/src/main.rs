@@ -421,10 +421,104 @@ async fn cmd_trust_pending(port: u16) -> Result<()> {
     Ok(())
 }
 
+// Add these new command handlers:
+
+async fn cmd_shutdown(port: u16) -> Result<()> {
+    #[derive(Deserialize)]
+    struct ShutdownResponse {
+        message: String,
+    }
+
+    let resp: ShutdownResponse = post_json(&format!("{}/daemon/shutdown", base_url(port))).await?;
+    println!("{}", resp.message);
+    Ok(())
+}
+
+async fn cmd_session_drop(port: u16, session_id: &str) -> Result<()> {
+    #[derive(Deserialize)]
+    struct DropResponse {
+        session_id: String,
+        dropped: bool,
+    }
+
+    let resp: DropResponse = reqwest::Client::new()
+    .delete(format!("{}/sessions/{}", base_url(port), session_id))
+    .send()
+    .await
+    .context("failed to drop session")?
+    .json()
+    .await
+    .context("failed to parse response")?;
+
+    if resp.dropped {
+        println!("✓ Session dropped: {}...", &resp.session_id[..16]);
+    } else {
+        println!("Session not found: {}", session_id);
+    }
+
+    Ok(())
+}
+
+async fn cmd_session_inspect(port: u16, session_id: &str) -> Result<()> {
+    #[derive(Deserialize)]
+    struct InspectResponse {
+        session_id: String,
+        peer_addr: String,
+        peer_pubkey: String,
+        contract: String,
+        chunk_port: u16,
+        uptime_secs: u64,
+        trust_level: String,
+    }
+
+    let resp: InspectResponse = get_json(&format!("{}/sessions/{}", base_url(port), session_id)).await?;
+
+    println!("═══════════════════════════════════════");
+    println!("  Session Details");
+    println!("═══════════════════════════════════════");
+    println!("  ID       : {}", resp.session_id);
+    println!("  Peer     : {}", resp.peer_addr);
+    println!("  Pubkey   : {}", resp.peer_pubkey);
+    println!("  Contract : {}", resp.contract);
+    println!("  Port     : {}", resp.chunk_port);
+    println!("  Uptime   : {}s", resp.uptime_secs);
+    println!("  Trust    : {}", resp.trust_level);
+
+    Ok(())
+}
+
+async fn cmd_schema_list(port: u16) -> Result<()> {
+    #[derive(Deserialize)]
+    struct SchemaListResponse {
+        schemas: Vec<SchemaItem>,
+    }
+
+    #[derive(Deserialize)]
+    struct SchemaItem {
+        id: String,
+        name: String,
+        type_tag: u8,
+    }
+
+    let resp: SchemaListResponse = get_json(&format!("{}/schema", base_url(port))).await?;
+
+    println!("═══════════════════════════════════════");
+    println!("  Known Schemas ({})", resp.schemas.len());
+    println!("═══════════════════════════════════════");
+
+    for schema in &resp.schemas {
+        println!("  ┌─ {} (tag: {})", schema.name, schema.type_tag);
+        println!("  └─ id: {}...", &schema.id[..16]);
+    }
+
+    Ok(())
+}
+
 fn print_usage() {
     println!("Usage: summit-ctl [--port <port>] <command>");
     println!();
     println!("Commands:");
+    println!("  shutdown            Gracefully shutdown the daemon");
     println!("  status              Show daemon status, sessions, and cache");
     println!("  peers               List discovered peers with trust status");
     println!("  cache               Show cache statistics");
@@ -449,6 +543,9 @@ fn print_usage() {
     println!("  summit-ctl send document.pdf");
     println!("  summit-ctl send photo.jpg --peer 99b1db0b1849c7f8...");
     println!("  summit-ctl send report.pdf --session 5441b43445712d95...");
+    println!("  sessions drop <id>  Drop a specific session");
+    println!("  sessions inspect <id> Show detailed session info");
+    println!("  schema list         List all known schemas");
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -505,6 +602,10 @@ async fn main() -> Result<()> {
     }
 
     match remaining_refs.as_slice() {
+        ["shutdown"]                          => cmd_shutdown(port).await,
+        ["sessions", "drop", id]              => cmd_session_drop(port, id).await,
+        ["sessions", "inspect", id]           => cmd_session_inspect(port, id).await,
+        ["schema", "list"] | ["schema"]       => cmd_schema_list(port).await,
         ["status"] | []                       => cmd_status(port).await,
         ["peers"]                             => cmd_peers(port).await,
         ["cache"]                             => cmd_cache(port).await,

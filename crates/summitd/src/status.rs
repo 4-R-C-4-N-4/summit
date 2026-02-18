@@ -2,6 +2,8 @@
 
 use axum::{Router, Json, extract::State};
 use axum::routing::{get, post};
+use axum::extract::Path;
+use axum::http::StatusCode;
 use serde::{Serialize, Deserialize};
 use tokio::net::TcpListener;
 
@@ -10,6 +12,7 @@ use crate::cache::ChunkCache;
 use crate::capability::PeerRegistry;
 use crate::trust::{TrustRegistry, TrustLevel, UntrustedBuffer};
 use crate::send_target::SendTarget;
+use crate::schema::KnownSchema;
 
 #[derive(Clone)]
 pub struct StatusState {
@@ -150,12 +153,6 @@ pub struct SendResponse {
     pub chunks_sent: usize,
 }
 
-#[derive(Deserialize)]
-pub struct SendRequest {
-    #[serde(default)]
-    pub target: SendTarget,
-}
-
 async fn handle_send(
     State(state): State<StatusState>,
                      mut multipart: Multipart,
@@ -270,8 +267,8 @@ pub struct TrustAddRequest {
 
 #[derive(Serialize)]
 pub struct TrustAddResponse {
-    pub public_key:      String,
-    pub flushed_chunks:  usize,
+    pub public_key:     String,
+    pub flushed_chunks: usize,
 }
 
 async fn handle_trust_add(
@@ -342,7 +339,7 @@ pub struct TrustPendingResponse {
 
 #[derive(Serialize)]
 pub struct PendingPeer {
-    pub public_key:     String,
+    pub public_key:      String,
     pub buffered_chunks: usize,
 }
 
@@ -357,20 +354,159 @@ async fn handle_trust_pending(State(state): State<StatusState>) -> Json<TrustPen
     Json(TrustPendingResponse { peers })
 }
 
+// ── /daemon/shutdown ──────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct ShutdownResponse {
+    pub message: String,
+}
+
+async fn handle_shutdown() -> Json<ShutdownResponse> {
+    tracing::info!("shutdown requested via API");
+
+    // Spawn a task to exit after responding
+    tokio::spawn(async {
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        std::process::exit(0);
+    });
+
+    Json(ShutdownResponse {
+        message: "Shutdown initiated".to_string(),
+    })
+}
+
+// ── /sessions/:id (DELETE) ────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct SessionDropResponse {
+    pub session_id: String,
+    pub dropped:    bool,
+}
+
+async fn handle_session_drop(
+    State(state): State<StatusState>,
+                             Path(session_id): Path<String>,
+) -> Result<Json<SessionDropResponse>, (StatusCode, String)> {
+    let id_bytes = hex::decode(&session_id)
+    .map_err(|_| (StatusCode::BAD_REQUEST, "invalid hex".to_string()))?;
+
+    if id_bytes.len() != 32 {
+        return Err((StatusCode::BAD_REQUEST, "session_id must be 32 bytes".to_string()));
+    }
+
+    let mut id = [0u8; 32];
+    id.copy_from_slice(&id_bytes);
+
+    let dropped = state.sessions.remove(&id).is_some();
+
+    if dropped {
+        tracing::info!(session_id = %session_id, "session dropped via API");
+    }
+
+    Ok(Json(SessionDropResponse {
+        session_id,
+        dropped,
+    }))
+}
+
+// ── /sessions/:id (GET) ───────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct SessionInspectResponse {
+    pub session_id:   String,
+    pub peer_addr:    String,
+    pub peer_pubkey:  String,
+    pub contract:     String,
+    pub chunk_port:   u16,
+    pub uptime_secs:  u64,
+    pub trust_level:  String,
+}
+
+async fn handle_session_inspect(
+    State(state): State<StatusState>,
+                                Path(session_id): Path<String>,
+) -> Result<Json<SessionInspectResponse>, (StatusCode, String)> {
+    let id_bytes = hex::decode(&session_id)
+    .map_err(|_| (StatusCode::BAD_REQUEST, "invalid hex".to_string()))?;
+
+    if id_bytes.len() != 32 {
+        return Err((StatusCode::BAD_REQUEST, "session_id must be 32 bytes".to_string()));
+    }
+
+    let mut id = [0u8; 32];
+    id.copy_from_slice(&id_bytes);
+
+    let session = state.sessions.get(&id)
+    .ok_or((StatusCode::NOT_FOUND, "session not found".to_string()))?;
+
+    let meta = &session.value().meta;
+    let trust_level = state.trust.check(&meta.peer_pubkey);
+
+    Ok(Json(SessionInspectResponse {
+        session_id:   hex::encode(meta.session_id),
+            peer_addr:    meta.peer_addr.to_string(),
+            peer_pubkey:  hex::encode(meta.peer_pubkey),
+            contract:     format!("{:?}", meta.contract),
+            chunk_port:   meta.chunk_port,
+            uptime_secs:  meta.established_at.elapsed().as_secs(),
+            trust_level:  format!("{:?}", trust_level),
+    }))
+}
+
+// ── /schema ───────────────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct SchemaListResponse {
+    pub schemas: Vec<SchemaInfoItem>,
+}
+
+#[derive(Serialize)]
+pub struct SchemaInfoItem {
+    pub id:       String,
+    pub name:     String,
+    pub type_tag: u8,
+}
+
+async fn handle_schema_list() -> Json<SchemaListResponse> {
+    let schemas = vec![
+        SchemaInfoItem {
+            id:       hex::encode(KnownSchema::TestPing.id()),
+            name:     KnownSchema::TestPing.name().to_string(),
+            type_tag: 1,
+        },
+        SchemaInfoItem {
+            id:       hex::encode(KnownSchema::FileData.id()),
+            name:     KnownSchema::FileData.name().to_string(),
+            type_tag: 2,
+        },
+        SchemaInfoItem {
+            id:       hex::encode(KnownSchema::FileMetadata.id()),
+            name:     KnownSchema::FileMetadata.name().to_string(),
+            type_tag: 3,
+        },
+    ];
+
+    Json(SchemaListResponse { schemas })
+}
+
 // ── Router ────────────────────────────────────────────────────────────────────
 
 pub async fn serve(state: StatusState, port: u16) -> anyhow::Result<()> {
     let app = Router::new()
-    .route("/status",        get(handle_status))
-    .route("/peers",         get(handle_peers))
-    .route("/cache",         get(handle_cache))
-    .route("/cache/clear",   post(handle_cache_clear))
-    .route("/send",          post(handle_send))
-    .route("/files",         get(handle_files))
-    .route("/trust",         get(handle_trust_list))
-    .route("/trust/add",     post(handle_trust_add))
-    .route("/trust/block",   post(handle_trust_block))
-    .route("/trust/pending", get(handle_trust_pending))
+    .route("/status",           get(handle_status))
+    .route("/peers",            get(handle_peers))
+    .route("/cache",            get(handle_cache))
+    .route("/cache/clear",      post(handle_cache_clear))
+    .route("/send",             post(handle_send))
+    .route("/files",            get(handle_files))
+    .route("/trust",            get(handle_trust_list))
+    .route("/trust/add",        post(handle_trust_add))
+    .route("/trust/block",      post(handle_trust_block))
+    .route("/trust/pending",    get(handle_trust_pending))
+    .route("/daemon/shutdown",  post(handle_shutdown))
+    .route("/sessions/{id}",     axum::routing::delete(handle_session_drop))
+    .route("/sessions/{id}",     get(handle_session_inspect))
+    .route("/schema",           get(handle_schema_list))
     .with_state(state);
 
     let listener = TcpListener::bind(format!("127.0.0.1:{}", port)).await?;
