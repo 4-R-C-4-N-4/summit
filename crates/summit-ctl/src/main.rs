@@ -1,7 +1,7 @@
 //! summit-ctl — command-line interface for the Summit daemon.
 
 use anyhow::{Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 const DEFAULT_PORT: u16 = 9001;
 
@@ -18,9 +18,11 @@ struct StatusResponse {
 struct SessionInfo {
     session_id:       String,
     peer:             String,
+    peer_pubkey:      String,
     contract:         String,
     chunk_port:       u16,
     established_secs: u64,
+    trust_level:      String,
 }
 
 #[derive(Deserialize)]
@@ -30,13 +32,15 @@ struct PeersResponse {
 
 #[derive(Deserialize)]
 struct PeerInfo {
-    public_key:     String,
-        addr:           String,
-        session_port:   u16,
-        chunk_port:     u16,
-        contract:       u8,
-        version:        u32,
-        last_seen_secs: u64,
+    public_key:      String,
+        addr:            String,
+        session_port:    u16,
+        chunk_port:      u16,
+        contract:        u8,
+        version:         u32,
+        last_seen_secs:  u64,
+        trust_level:     String,
+        buffered_chunks: usize,
 }
 
 #[derive(Deserialize)]
@@ -48,6 +52,62 @@ struct CacheInfo {
 #[derive(Deserialize)]
 struct ClearResponse {
     cleared: usize,
+}
+
+#[derive(Deserialize)]
+struct TrustListResponse {
+    rules: Vec<TrustRule>,
+}
+
+#[derive(Deserialize)]
+struct TrustRule {
+    public_key: String,
+        level:      String,
+}
+
+#[derive(Serialize)]
+struct TrustAddRequest {
+    public_key: String,
+}
+
+#[derive(Deserialize)]
+struct TrustAddResponse {
+    public_key:     String,
+        flushed_chunks: usize,
+}
+
+#[derive(Serialize)]
+struct TrustBlockRequest {
+    public_key: String,
+}
+
+#[derive(Deserialize)]
+struct TrustBlockResponse {
+    public_key: String,
+}
+
+#[derive(Deserialize)]
+struct TrustPendingResponse {
+    peers: Vec<PendingPeer>,
+}
+
+#[derive(Deserialize)]
+struct PendingPeer {
+    public_key:      String,
+        buffered_chunks: usize,
+}
+
+#[derive(Deserialize)]
+struct SendResponse {
+    filename:    String,
+    bytes:       u64,
+    chunks_sent: usize,
+}
+
+#[derive(Deserialize)]
+struct FilesResponse {
+    received:    Vec<String>,
+    in_progress: Vec<String>,
 }
 
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
@@ -76,6 +136,22 @@ async fn post_json<T: for<'de> Deserialize<'de>>(url: &str) -> Result<T> {
     .context("failed to parse response")
 }
 
+async fn post_json_body<T, R>(url: &str, body: &T) -> Result<R>
+where
+T: Serialize,
+R: for<'de> Deserialize<'de>,
+{
+    reqwest::Client::new()
+    .post(url)
+    .json(body)
+    .send()
+    .await
+    .with_context(|| format!("failed to connect to summitd at {} — is it running?", url))?
+    .json::<R>()
+    .await
+    .context("failed to parse response")
+}
+
 // ── Subcommand handlers ───────────────────────────────────────────────────────
 
 async fn cmd_status(port: u16) -> Result<()> {
@@ -94,10 +170,16 @@ async fn cmd_status(port: u16) -> Result<()> {
     } else {
         println!("\n  Sessions:");
         for s in &resp.sessions {
-            println!("  ┌─ {}", &s.session_id[..16]);
+            let trust_icon = match s.trust_level.as_str() {
+                "Trusted" => "✓",
+                "Blocked" => "✗",
+                _ => "?",
+            };
+            println!("  ┌─ {} {}", trust_icon, &s.session_id[..16]);
             println!("  │  peer     : {}", s.peer);
+            println!("  │  pubkey   : {}...", &s.peer_pubkey[..16]);
             println!("  │  contract : {}", s.contract);
-            println!("  │  port     : {}", s.chunk_port);
+            println!("  │  trust    : {}", s.trust_level);
             println!("  └─ uptime   : {}s", s.established_secs);
         }
     }
@@ -124,12 +206,21 @@ async fn cmd_peers(port: u16) -> Result<()> {
             0x03 => "Background",
             _    => "Unknown",
         };
-        println!("  ┌─ {}", &p.public_key[..16]);
+
+        let trust_icon = match p.trust_level.as_str() {
+            "Trusted" => "✓",
+            "Blocked" => "✗",
+            _ => "?",
+        };
+
+        println!("  ┌─ {} {}...", trust_icon, &p.public_key[..16]);
         println!("  │  addr         : {}", p.addr);
         println!("  │  session port : {}", p.session_port);
-        println!("  │  chunk port   : {}", p.chunk_port);
         println!("  │  contract     : {}", contract_name);
-        println!("  │  version      : {}", p.version);
+        println!("  │  trust        : {}", p.trust_level);
+        if p.buffered_chunks > 0 {
+            println!("  │  buffered     : {} chunks", p.buffered_chunks);
+        }
         println!("  └─ last seen    : {}s ago", p.last_seen_secs);
     }
 
@@ -221,32 +312,109 @@ async fn cmd_files(port: u16) -> Result<()> {
     Ok(())
 }
 
-#[derive(Deserialize)]
-struct SendResponse {
-    filename:    String,
-    bytes:       u64,
-    chunks_sent: usize,
+async fn cmd_trust_list(port: u16) -> Result<()> {
+    let resp: TrustListResponse = get_json(&format!("{}/trust", base_url(port))).await?;
+
+    if resp.rules.is_empty() {
+        println!("No explicit trust rules. All peers default to Untrusted.");
+        return Ok(());
+    }
+
+    println!("═══════════════════════════════════════");
+    println!("  Trust Rules ({})", resp.rules.len());
+    println!("═══════════════════════════════════════");
+
+    for rule in &resp.rules {
+        let icon = match rule.level.as_str() {
+            "Trusted" => "✓",
+            "Blocked" => "✗",
+            _ => "?",
+        };
+        println!("  {} {} — {}", icon, &rule.public_key[..16], rule.level);
+    }
+
+    Ok(())
 }
 
-#[derive(Deserialize)]
-struct FilesResponse {
-    received:    Vec<String>,
-    in_progress: Vec<String>,
+async fn cmd_trust_add(port: u16, pubkey: &str) -> Result<()> {
+    let req = TrustAddRequest {
+        public_key: pubkey.to_string(),
+    };
+
+    let resp: TrustAddResponse = post_json_body(
+        &format!("{}/trust/add", base_url(port)),
+                                                &req
+    ).await?;
+
+    println!("✓ Peer trusted: {}...", &resp.public_key[..16]);
+    if resp.flushed_chunks > 0 {
+        println!("  Processed {} buffered chunks", resp.flushed_chunks);
+    }
+
+    Ok(())
+}
+
+async fn cmd_trust_block(port: u16, pubkey: &str) -> Result<()> {
+    let req = TrustBlockRequest {
+        public_key: pubkey.to_string(),
+    };
+
+    let resp: TrustBlockResponse = post_json_body(
+        &format!("{}/trust/block", base_url(port)),
+                                                  &req
+    ).await?;
+
+    println!("✗ Peer blocked: {}...", &resp.public_key[..16]);
+
+    Ok(())
+}
+
+async fn cmd_trust_pending(port: u16) -> Result<()> {
+    let resp: TrustPendingResponse = get_json(&format!("{}/trust/pending", base_url(port))).await?;
+
+    if resp.peers.is_empty() {
+        println!("No buffered chunks from untrusted peers.");
+        return Ok(());
+    }
+
+    println!("═══════════════════════════════════════");
+    println!("  Untrusted Peers with Buffered Chunks");
+    println!("═══════════════════════════════════════");
+
+    for peer in &resp.peers {
+        println!("  ? {}... — {} chunks buffered",
+                 &peer.public_key[..16],
+                 peer.buffered_chunks);
+    }
+
+    println!("\nUse 'summit-ctl trust add <pubkey>' to trust a peer and process their buffered chunks.");
+
+    Ok(())
 }
 
 fn print_usage() {
     println!("Usage: summit-ctl [--port <port>] <command>");
     println!();
     println!("Commands:");
-    println!("  status          Show daemon status, sessions, and cache stats");
-    println!("  peers           List discovered peers");
-    println!("  cache           Show cache statistics");
-    println!("  cache clear     Clear the chunk cache");
-    println!("  send <file>     Send a file to all peers");
-    println!("  files           List received files");
+    println!("  status              Show daemon status, sessions, and cache");
+    println!("  peers               List discovered peers with trust status");
+    println!("  cache               Show cache statistics");
+    println!("  cache clear         Clear the chunk cache");
+    println!("  send <file>         Send a file to all trusted peers");
+    println!("  files               List received files");
+    println!("  trust list          Show trust rules");
+    println!("  trust add <pubkey>  Trust a peer (process buffered chunks)");
+    println!("  trust block <pubkey> Block a peer");
+    println!("  trust pending       List untrusted peers with buffered chunks");
     println!();
     println!("Options:");
-    println!("  --port <port>   Status endpoint port (default: {})", DEFAULT_PORT);
+    println!("  --port <port>       Status endpoint port (default: {})", DEFAULT_PORT);
+    println!();
+    println!("Examples:");
+    println!("  summit-ctl status");
+    println!("  summit-ctl peers");
+    println!("  summit-ctl trust add 5c8c7d3c9eff6572...");
+    println!("  summit-ctl send document.pdf");
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -273,13 +441,17 @@ async fn main() -> Result<()> {
     }
 
     match remaining.as_slice() {
-        ["status"] | []                    => cmd_status(port).await,
-        ["peers"]                          => cmd_peers(port).await,
-        ["cache"]                          => cmd_cache(port).await,
-        ["cache", "clear"]                 => cmd_cache_clear(port).await,
-        ["send", path]                     => cmd_send(port, path).await,
-        ["files"]                          => cmd_files(port).await,
-        ["help"] | ["--help"] | ["-h"]     => { print_usage(); Ok(()) }
+        ["status"] | []                       => cmd_status(port).await,
+        ["peers"]                             => cmd_peers(port).await,
+        ["cache"]                             => cmd_cache(port).await,
+        ["cache", "clear"]                    => cmd_cache_clear(port).await,
+        ["send", path]                        => cmd_send(port, path).await,
+        ["files"]                             => cmd_files(port).await,
+        ["trust", "list"] | ["trust"]         => cmd_trust_list(port).await,
+        ["trust", "add", pubkey]              => cmd_trust_add(port, pubkey).await,
+        ["trust", "block", pubkey]            => cmd_trust_block(port, pubkey).await,
+        ["trust", "pending"]                  => cmd_trust_pending(port).await,
+        ["help"] | ["--help"] | ["-h"]        => { print_usage(); Ok(()) }
         other => {
             eprintln!("Unknown command: {}", other.join(" "));
             eprintln!();
