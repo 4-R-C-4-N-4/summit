@@ -13,6 +13,8 @@ use crate::capability::PeerRegistry;
 use crate::trust::{TrustRegistry, TrustLevel, UntrustedBuffer};
 use crate::send_target::SendTarget;
 use crate::schema::KnownSchema;
+use tower_http::cors::{CorsLayer, Any};
+
 
 #[derive(Clone)]
 pub struct StatusState {
@@ -492,6 +494,13 @@ async fn handle_schema_list() -> Json<SchemaListResponse> {
 // ── Router ────────────────────────────────────────────────────────────────────
 
 pub async fn serve(state: StatusState, port: u16) -> anyhow::Result<()> {
+    let cors = CorsLayer::new()
+    .allow_origin(Any)
+    .allow_methods(Any)
+    .allow_headers(Any);
+    // for prod:
+    //.allow_origin("http://localhost:{the-app-port}".parse::<HeaderValue>().unwrap())
+
     let app = Router::new()
     .route("/status",           get(handle_status))
     .route("/peers",            get(handle_peers))
@@ -507,6 +516,7 @@ pub async fn serve(state: StatusState, port: u16) -> anyhow::Result<()> {
     .route("/sessions/{id}",     axum::routing::delete(handle_session_drop))
     .route("/sessions/{id}",     get(handle_session_inspect))
     .route("/schema",           get(handle_schema_list))
+    .layer(cors)
     .with_state(state);
 
     let listener = TcpListener::bind(format!("127.0.0.1:{}", port)).await?;
