@@ -96,7 +96,7 @@ IPv6 link-local addresses (`fe80::/10`) are used for all direct communication. T
 
 ```
 ┌─────────────────────────────────────┐
-│     Applications (Rust or C)        │
+│     Applications (Rust)             │
 ├─────────────────────────────────────┤
 │         libsummit                   │  Rust crate + C FFI via cbindgen
 │                                     │  capability lookup, chunk send/recv,
@@ -121,22 +121,6 @@ IPv6 link-local addresses (`fe80::/10`) are used for all direct communication. T
 
 ---
 
-## Zenith — v0.1 Milestone
-
-The first release milestone is **Zenith**. Zenith is intentionally scoped: a working proof of the core design over a direct ethernet link between two machines running Arch Linux.
-
-Zenith delivers:
-
-- Capability announcement and discovery over IPv6 link-local multicast
-- Noise\_XX session establishment between two peers
-- Chunk framing with schema negotiation and content hash verification
-- Basic content-addressed chunk cache with mmap'd application access
-- WiFi Direct link establishment via `wpa_supplicant` P2P
-- `summit-ctl` for session and cache inspection
-
-Zenith does not deliver multi-hop routing, mesh networking, or non-Linux platform support. Those come later. Zenith proves the foundation.
-
----
 
 ## What Summit Is Not
 
@@ -146,18 +130,6 @@ Summit is a communication substrate for devices that are physically near each ot
 
 ---
 
-## Status
-
-**Pre-release. Active development toward Zenith (v0.1).**
-
-Summit is designed for Linux. Development is conducted on Arch Linux against the current upstream kernel. Contributions, design discussions, and protocol feedback are welcome.
-
----
-
 ## License
 
-TBD — likely MIT or Apache 2.0. Chosen before Zenith release.
-
----
-
-*Summit. Because the best path between two points is a straight line.*
+MIT 
