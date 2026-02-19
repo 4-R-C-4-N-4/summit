@@ -277,7 +277,7 @@ pub struct MessageJson {
 
 async fn handle_get_messages(
     State(state): State<StatusState>,
-                             Path(peer_pubkey): Path<String>,
+    Path(peer_pubkey): Path<String>,
 ) -> Result<Json<MessagesResponse>, (StatusCode, String)> {
     let pubkey_bytes = hex::decode(&peer_pubkey)
     .map_err(|_| (StatusCode::BAD_REQUEST, "invalid hex".to_string()))?;
@@ -444,7 +444,7 @@ pub struct TrustBlockResponse {
 
 async fn handle_trust_block(
     State(state): State<StatusState>,
-                            Json(req): Json<TrustBlockRequest>,
+    Json(req): Json<TrustBlockRequest>,
 ) -> Result<Json<TrustBlockResponse>, (axum::http::StatusCode, String)> {
     let pubkey_bytes = hex::decode(&req.public_key)
     .map_err(|_| (axum::http::StatusCode::BAD_REQUEST, "invalid hex".to_string()))?;

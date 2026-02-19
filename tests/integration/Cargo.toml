@@ -11,3 +11,4 @@ path = "main.rs"
 summit-core = { path = "../../crates/summit-core" }
 tokio       = { version = "1", features = ["full"] }
 anyhow      = "1"
+serde_json = "1.0.85"

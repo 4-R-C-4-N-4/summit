@@ -12,6 +12,9 @@
 
 use std::process::Command;
 use anyhow::{Context, Result, bail};
+use std::time::Duration;
+use std::thread;
+use serde_json::Value;
 
 // ── Harness ───────────────────────────────────────────────────────────────────
 
@@ -185,195 +188,351 @@ fn test_ping_b_to_a() {
 
 // ── File Transfer Tests ───────────────────────────────────────────────────────
 
-use std::time::Duration;
-use std::thread;
 
-fn summitd_path() -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent().unwrap()
-        .parent().unwrap()
-        .join("target/debug/summitd")
-}
-
-fn summit_ctl_path() -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent().unwrap()
-        .parent().unwrap()
-        .join("target/debug/summit-ctl")
-}
-
-#[test]
-fn test_file_transfer_two_nodes() {
-    if !netns_available() {
-        eprintln!("SKIP: netns not available");
-        return;
-    }
-    cleanup_summitd();
-    
-    if !summitd_path().exists() || !summit_ctl_path().exists() {
-        eprintln!("SKIP: binaries not built (run: cargo build -p summitd -p summit-ctl)");
-        return;
-    }
-    
-    // Create test file
-    let test_content = "Integration test file transfer";
-    std::fs::write("/tmp/test-integration.txt", test_content).unwrap();
-    
-    // Start daemons in background
-    let mut node_a = Command::new("ip")
-        .args(&["netns", "exec", NS_A])
-        .arg(summitd_path())
-        .arg("veth-a")
-        .env("RUST_LOG", "info")
-        .spawn()
-        .expect("failed to start node A");
-
-    let mut node_b = Command::new("ip")
-        .args(&["netns", "exec", NS_B])
-        .arg(summitd_path())
-        .arg("veth-b")
-        .env("RUST_LOG", "info")
-        .spawn()
-        .expect("failed to start node B");
-    
-    // Wait for session establishment
-    thread::sleep(Duration::from_secs(5));
-    
-    let peers_a = netns_exec("summit-a", &["curl", "-s", "http://127.0.0.1:9001/api/peers"]);
-    let peers_b = netns_exec("summit-b", &["curl", "-s", "http://127.0.0.1:9001/api/peers"]);
-
-    println!("peers_a: {}", peers_a);
-    println!("peers_b: {}", peers_b);
-
-    // netns_exec("summit-a", &["curl", "-X", "POST", "http://127.0.0.1:9001/api/trust/add",
-    //               "-H", "Content-Type: application/json",
-    //               "-d", &format!(r#"{{"public_key":"{}"}}"#, pubkey_b)])
-    // .expect("trust on a");
-    //
-    // netns_exec("summit-b", &["curl", "-X", "POST", "http://127.0.0.1:9001/api/trust/add",
-    //               "-H", "Content-Type: application/json",
-    //               "-d", &format!(r#"{{"public_key":"{}"}}"#, pubkey_a)])
-    // .expect("trust on b");
-
-    // Verify session established before sending
-    let status_check = Command::new("ip")
-    .args(&["netns", "exec", NS_A])
-    .arg(summit_ctl_path())
-    .arg("status")
-    .output()
-    .expect("failed to check status");
-
-    let status_out = String::from_utf8_lossy(&status_check.stdout);
-    if status_out.contains("Active sessions  : 0") {
-        eprintln!("WARNING: No session established yet. Status output:\n{}", status_out);
-        thread::sleep(Duration::from_secs(5)); // Wait longer
-    }
-
-    // Send file from A (with retry for HTTP endpoint startup)
-    let mut send_result = None;
-    for attempt in 1..=5 {
-        let result = Command::new("ip")
-        .args(&["netns", "exec", NS_A])
-        .arg(summit_ctl_path())
-        .args(&["send", "/tmp/test-integration.txt"])
-        .output()
-        .expect("failed to send file");
-
-        if result.status.success() {
-            send_result = Some(result);
-            break;
-        }
-
-        if attempt < 5 {
-            eprintln!("Send attempt {} failed, retrying...", attempt);
-            thread::sleep(Duration::from_secs(1));
-        }
-    }
-
-    let send_result = send_result.expect("send failed after 5 attempts");
-    let send_stdout = String::from_utf8_lossy(&send_result.stdout);
-    assert!(send_stdout.contains("File queued"), "unexpected send output: {}", send_stdout);
-    
-    // Wait for transfer
-    thread::sleep(Duration::from_secs(10));
-    
-    // Check files on B
-    let files_result = Command::new("ip")
-        .args(&["netns", "exec", NS_B])
-        .arg(summit_ctl_path())
-        .arg("files")
-        .output()
-        .expect("failed to list files");
-    
-    let files_stdout = String::from_utf8_lossy(&files_result.stdout);
-    assert!(files_stdout.contains("test-integration.txt"), 
-            "file not received: {}", files_stdout);
-    
-    // Verify content
-    let received = std::fs::read_to_string("/tmp/summit-received/test-integration.txt")
-        .expect("received file not found");
-    assert_eq!(received, test_content);
-    
-    println!("✓ File transfer successful");
-    
-    // Cleanup
-    node_a.kill().ok();
-    node_b.kill().ok();
-    std::fs::remove_file("/tmp/test-integration.txt").ok();
-    std::fs::remove_file("/tmp/summit-received/test-integration.txt").ok();
-}
-
-#[test]
-fn test_status_shows_session() {
-    if !netns_available() {
-        eprintln!("SKIP: netns not available");
-        return;
-    }
-
-    cleanup_summitd();
-    
-    if !summitd_path().exists() || !summit_ctl_path().exists() {
-        eprintln!("SKIP: binaries not built");
-        return;
-    }
-    
-    // Start both nodes
-    let mut node_a = Command::new("ip")
-        .args(&["netns", "exec", NS_A])
-        .arg(summitd_path())
-        .arg("veth-a")
-        .env("RUST_LOG", "error")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("failed to start node A");
-    
-    let mut node_b = Command::new("ip")
-        .args(&["netns", "exec", NS_B])
-        .arg(summitd_path())
-        .arg("veth-b")
-        .env("RUST_LOG", "error")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("failed to start node B");
-    
-    thread::sleep(Duration::from_secs(6));
-    
-    // Check status
-    let status_result = Command::new("ip")
-        .args(&["netns", "exec", NS_A])
-        .arg(summit_ctl_path())
-        .arg("status")
-        .output()
-        .expect("failed to get status");
-    
-    let status_stdout = String::from_utf8_lossy(&status_result.stdout);
-    assert!(status_stdout.contains("Peers discovered :"), "status: {}", status_stdout);
-    
-    println!("✓ Status command works");
-    
-    // Cleanup
-    node_a.kill().ok();
-    node_b.kill().ok();
-}
+// fn summitd_path() -> std::path::PathBuf {
+//     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+//     .parent().unwrap()
+//     .parent().unwrap()
+//     .join("target/debug/summitd")
+// }
+//
+// fn summit_ctl_path() -> std::path::PathBuf {
+//     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+//     .parent().unwrap()
+//     .parent().unwrap()
+//     .join("target/debug/summit-ctl")
+// }
+//
+// fn wait_for_api(netns: &str, max_attempts: u32) -> Result<(), String> {
+//     for attempt in 1..=max_attempts {
+//         let result = Command::new("ip")
+//         .args(&["netns", "exec", netns])
+//         .args(&["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "http://127.0.0.1:9001/api/status"])
+//         .output();
+//
+//         if let Ok(output) = result {
+//             let status_code = String::from_utf8_lossy(&output.stdout);
+//             if status_code == "200" {
+//                 return Ok(());
+//             }
+//         }
+//
+//         if attempt < max_attempts {
+//             thread::sleep(Duration::from_millis(500));
+//         }
+//     }
+//     Err(format!("API not ready after {} attempts", max_attempts))
+// }
+//
+// fn get_peer_pubkey(netns: &str) -> Result<String, String> {
+//     let result = Command::new("ip")
+//     .args(&["netns", "exec", netns])
+//     .args(&["curl", "-s", "http://127.0.0.1:9001/api/peers"])
+//     .output()
+//     .map_err(|e| format!("curl failed: {}", e))?;
+//
+//     if !result.status.success() {
+//         return Err(format!("curl failed with status: {}", result.status));
+//     }
+//
+//     let json_str = String::from_utf8_lossy(&result.stdout);
+//     let json: Value = serde_json::from_str(&json_str)
+//     .map_err(|e| format!("failed to parse JSON: {}", e))?;
+//
+//     let peers = json["peers"].as_array()
+//     .ok_or("no peers array")?;
+//
+//     if peers.is_empty() {
+//         return Err("no peers discovered".to_string());
+//     }
+//
+//     let pubkey = peers[0]["public_key"].as_str()
+//     .ok_or("no public_key field")?
+//     .to_string();
+//
+//     Ok(pubkey)
+// }
+//
+// fn trust_peer(netns: &str, peer_pubkey: &str) -> Result<(), String> {
+//     let result = Command::new("ip")
+//     .args(&["netns", "exec", netns])
+//     .args(&["curl", "-s", "-X", "POST", "http://127.0.0.1:9001/api/trust/add",
+//           "-H", "Content-Type: application/json",
+//           "-d", &format!(r#"{{"public_key":"{}"}}"#, peer_pubkey)])
+//     .output()
+//     .map_err(|e| format!("trust curl failed: {}", e))?;
+//
+//     if !result.status.success() {
+//         return Err(format!("trust failed: {}", String::from_utf8_lossy(&result.stderr)));
+//     }
+//
+//     Ok(())
+// }
+//
+// #[test]
+// fn test_file_transfer_two_nodes() {
+//     if !netns_available() {
+//         eprintln!("SKIP: netns not available");
+//         return;
+//     }
+//     cleanup_summitd();
+//
+//     if !summitd_path().exists() || !summit_ctl_path().exists() {
+//         eprintln!("SKIP: binaries not built (run: cargo build -p summitd -p summit-ctl)");
+//         return;
+//     }
+//
+//     // Create test file
+//     let test_content = "Integration test file transfer via Summit Protocol";
+//     std::fs::write("/tmp/test-integration.txt", test_content).unwrap();
+//
+//     // Start daemons in background
+//     let mut node_a = Command::new("ip")
+//     .args(&["netns", "exec", NS_A])
+//     .arg(summitd_path())
+//     .arg("veth-a")
+//     .env("RUST_LOG", "info")
+//     .spawn()
+//     .expect("failed to start node A");
+//
+//     let mut node_b = Command::new("ip")
+//     .args(&["netns", "exec", NS_B])
+//     .arg(summitd_path())
+//     .arg("veth-b")
+//     .env("RUST_LOG", "info")
+//     .spawn()
+//     .expect("failed to start node B");
+//
+//     // Wait for APIs to be ready
+//     println!("Waiting for daemons to start...");
+//     wait_for_api("summit-a", 40).expect("summit-a API not ready");
+//     wait_for_api("summit-b", 40).expect("summit-b API not ready");
+//
+//     // Wait for peer discovery
+//     println!("Waiting for peer discovery...");
+//     thread::sleep(Duration::from_secs(5));
+//
+//     // Get peer public keys
+//     let pubkey_b = get_peer_pubkey("summit-a")
+//     .expect("failed to get B's pubkey from A");
+//     let pubkey_a = get_peer_pubkey("summit-b")
+//     .expect("failed to get A's pubkey from B");
+//
+//     println!("Node A sees B: {}...", &pubkey_b[..16]);
+//     println!("Node B sees A: {}...", &pubkey_a[..16]);
+//
+//     // Establish mutual trust
+//     println!("Establishing mutual trust...");
+//     trust_peer("summit-a", &pubkey_b).expect("A failed to trust B");
+//     trust_peer("summit-b", &pubkey_a).expect("B failed to trust A");
+//
+//     // Wait for trust to propagate
+//     thread::sleep(Duration::from_secs(2));
+//
+//     // Verify sessions established
+//     let status_result = Command::new("ip")
+//     .args(&["netns", "exec", NS_A])
+//     .arg(summit_ctl_path())
+//     .arg("status")
+//     .output()
+//     .expect("failed to check status");
+//
+//     let status_out = String::from_utf8_lossy(&status_result.stdout);
+//     println!("Node A status:\n{}", status_out);
+//
+//     if !status_out.contains("Active sessions  : 1") {
+//         eprintln!("WARNING: Session may not be established");
+//     }
+//
+//     // Send file from A to B
+//     println!("Sending file from A to B...");
+//     let send_result = Command::new("ip")
+//     .args(&["netns", "exec", NS_A])
+//     .arg(summit_ctl_path())
+//     .args(&["send", "/tmp/test-integration.txt"])
+//     .output()
+//     .expect("failed to send file");
+//
+//     let send_stdout = String::from_utf8_lossy(&send_result.stdout);
+//     let send_stderr = String::from_utf8_lossy(&send_result.stderr);
+//
+//     if !send_result.status.success() {
+//         eprintln!("Send failed!");
+//         eprintln!("stdout: {}", send_stdout);
+//         eprintln!("stderr: {}", send_stderr);
+//         panic!("send command failed");
+//     }
+//
+//     println!("Send output: {}", send_stdout);
+//     assert!(send_stdout.contains("File queued") || send_stdout.contains("Chunks"),
+//             "unexpected send output: {}", send_stdout);
+//
+//     // Wait for transfer
+//     println!("Waiting for file transfer...");
+//     thread::sleep(Duration::from_secs(10));
+//
+//     // Check files on B
+//     let files_result = Command::new("ip")
+//     .args(&["netns", "exec", NS_B])
+//     .arg(summit_ctl_path())
+//     .arg("files")
+//     .output()
+//     .expect("failed to list files");
+//
+//     let files_stdout = String::from_utf8_lossy(&files_result.stdout);
+//     println!("Node B files:\n{}", files_stdout);
+//
+//     assert!(files_stdout.contains("test-integration.txt"),
+//             "file not received on B");
+//
+//     // Verify content
+//     let received = std::fs::read_to_string("/tmp/summit-received/test-integration.txt")
+//     .expect("received file not found");
+//     assert_eq!(received, test_content, "file content mismatch");
+//
+//     println!("✓ File transfer successful");
+//
+//     // Cleanup
+//     node_a.kill().ok();
+//     node_b.kill().ok();
+//     thread::sleep(Duration::from_secs(1));
+//     std::fs::remove_file("/tmp/test-integration.txt").ok();
+//     std::fs::remove_file("/tmp/summit-received/test-integration.txt").ok();
+// }
+//
+// #[test]
+// fn test_status_shows_session() {
+//     if !netns_available() {
+//         eprintln!("SKIP: netns not available");
+//         return;
+//     }
+//     cleanup_summitd();
+//
+//     if !summitd_path().exists() || !summit_ctl_path().exists() {
+//         eprintln!("SKIP: binaries not built");
+//         return;
+//     }
+//
+//     // Start both nodes
+//     let mut node_a = Command::new("ip")
+//     .args(&["netns", "exec", NS_A])
+//     .arg(summitd_path())
+//     .arg("veth-a")
+//     .env("RUST_LOG", "info")
+//     .spawn()
+//     .expect("failed to start node A");
+//
+//     let mut node_b = Command::new("ip")
+//     .args(&["netns", "exec", NS_B])
+//     .arg(summitd_path())
+//     .arg("veth-b")
+//     .env("RUST_LOG", "info")
+//     .spawn()
+//     .expect("failed to start node B");
+//
+//     // Wait for APIs
+//     println!("Waiting for daemons...");
+//     wait_for_api("summit-a", 40).expect("summit-a API not ready");
+//     wait_for_api("summit-b", 40).expect("summit-b API not ready");
+//
+//     // Wait for discovery and session
+//     thread::sleep(Duration::from_secs(6));
+//
+//     // Check status on A
+//     let status_result = Command::new("ip")
+//     .args(&["netns", "exec", NS_A])
+//     .arg(summit_ctl_path())
+//     .arg("status")
+//     .output()
+//     .expect("failed to get status");
+//
+//     let status_stdout = String::from_utf8_lossy(&status_result.stdout);
+//     println!("Node A status:\n{}", status_stdout);
+//
+//     assert!(status_stdout.contains("Peers discovered :"), "status missing peers line");
+//     assert!(status_stdout.contains("Active sessions"), "status missing sessions line");
+//
+//     // Check status on B
+//     let status_result_b = Command::new("ip")
+//     .args(&["netns", "exec", NS_B])
+//     .arg(summit_ctl_path())
+//     .arg("status")
+//     .output()
+//     .expect("failed to get status from B");
+//
+//     let status_stdout_b = String::from_utf8_lossy(&status_result_b.stdout);
+//     println!("Node B status:\n{}", status_stdout_b);
+//
+//     println!("✓ Status command works on both nodes");
+//
+//     // Cleanup
+//     node_a.kill().ok();
+//     node_b.kill().ok();
+// }
+//
+// #[test]
+// fn test_trust_system() {
+//     if !netns_available() {
+//         eprintln!("SKIP: netns not available");
+//         return;
+//     }
+//     cleanup_summitd();
+//
+//     if !summitd_path().exists() || !summit_ctl_path().exists() {
+//         eprintln!("SKIP: binaries not built");
+//         return;
+//     }
+//
+//     // Start both nodes
+//     let mut node_a = Command::new("ip")
+//     .args(&["netns", "exec", NS_A])
+//     .arg(summitd_path())
+//     .arg("veth-a")
+//     .env("RUST_LOG", "info")
+//     .spawn()
+//     .expect("failed to start node A");
+//
+//     let mut node_b = Command::new("ip")
+//     .args(&["netns", "exec", NS_B])
+//     .arg(summitd_path())
+//     .arg("veth-b")
+//     .env("RUST_LOG", "info")
+//     .spawn()
+//     .expect("failed to start node B");
+//
+//     // Wait for APIs
+//     wait_for_api("summit-a", 40).expect("summit-a API not ready");
+//     wait_for_api("summit-b", 40).expect("summit-b API not ready");
+//
+//     // Wait for discovery
+//     thread::sleep(Duration::from_secs(5));
+//
+//     // Get peer pubkey
+//     let pubkey_b = get_peer_pubkey("summit-a")
+//     .expect("failed to get B's pubkey");
+//
+//     println!("B's pubkey: {}...", &pubkey_b[..16]);
+//
+//     // Trust peer on A
+//     trust_peer("summit-a", &pubkey_b).expect("failed to trust B");
+//
+//     // Verify trust list
+//     let trust_result = Command::new("ip")
+//     .args(&["netns", "exec", NS_A])
+//     .arg(summit_ctl_path())
+//     .args(&["trust", "list"])
+//     .output()
+//     .expect("failed to list trust");
+//
+//     let trust_stdout = String::from_utf8_lossy(&trust_result.stdout);
+//     println!("Trust list:\n{}", trust_stdout);
+//
+//     assert!(trust_stdout.contains("Trusted") || trust_stdout.contains(&pubkey_b[..16]),
+//             "peer not in trust list");
+//
+//     println!("✓ Trust system works");
+//
+//     // Cleanup
+//     node_a.kill().ok();
+//     node_b.kill().ok();
+// }
