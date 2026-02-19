@@ -28,7 +28,7 @@ use mime_guess;
 
 #[cfg(feature = "embed-ui")]
 #[derive(RustEmbed)]
-#[folder = "../../astral/dist"]
+#[folder = "../astral/dist"]
 struct WebAssets;
 
 #[derive(Clone)]

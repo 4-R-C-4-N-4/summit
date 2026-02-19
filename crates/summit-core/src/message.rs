@@ -296,7 +296,7 @@ mod tests {
     fn test_text_message() {
         let sender = [1u8; 32];
         let recipient = [2u8; 32];
-        let msg = MessageChunk::text(sender, recipient, "Hello!".to_string(), None);
+        let msg = MessageChunk::text(sender, recipient, "Hello!".to_string());
         
         assert_eq!(msg.msg_type, MessageType::Text);
         assert_eq!(msg.sender, sender);
@@ -312,7 +312,7 @@ mod tests {
     fn test_serialization() {
         let sender = [1u8; 32];
         let recipient = [2u8; 32];
-        let msg = MessageChunk::text(sender, recipient, "Test".to_string(), None);
+        let msg = MessageChunk::text(sender, recipient, "Test".to_string());
         
         let bytes = msg.to_bytes();
         let decoded = MessageChunk::from_bytes(&bytes).unwrap();
