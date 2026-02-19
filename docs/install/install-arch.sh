@@ -23,11 +23,11 @@ fi
 
 # Step 1: Update system
 echo -e "${YELLOW}[1/4] Updating system...${NC}"
-pacman -Syu --noconfirm
+pacman -Sy --noconfirm
 
 # Step 2: Install dependencies
 echo -e "${YELLOW}[2/4] Installing dependencies...${NC}"
-pacman -S --noconfirm \
+pacman -S --noconfirm --needed \
     curl \
     tar \
     iproute2 \

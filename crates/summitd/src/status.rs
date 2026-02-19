@@ -724,7 +724,7 @@ pub async fn serve(state: StatusState, port: u16) -> anyhow::Result<()> {
         .route("/sessions/{id}", axum::routing::delete(handle_session_drop))
         .route("/sessions/{id}", get(handle_session_inspect))
         .route("/schema", get(handle_schema_list))
-        .route("/messages/:peer_pubkey", get(handle_get_messages))
+        .route("/messages/{peer_pubkey}", get(handle_get_messages))
         .route("/messages/send", post(handle_send_message))
         .with_state(state);
 
