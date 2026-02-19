@@ -289,12 +289,20 @@ mod tests {
         assert_eq!(bytes.len(), 74);
 
         let recovered = CapabilityAnnouncement::read_from(bytes).unwrap();
-        assert_eq!(recovered.capability_hash, original.capability_hash);
-        assert_eq!(recovered.public_key,      original.public_key);
-        assert_eq!(recovered.session_port, 9000);
-        assert_eq!(recovered.chunk_port, 9001);
-        assert_eq!(recovered.contract, Contract::Bulk as u8);
-        assert_eq!(recovered.version, 7);
+
+        let recovered_hash = recovered.capability_hash;
+        let recovered_pubkey = recovered.public_key;
+        let recovered_session = recovered.session_port;
+        let recovered_chunk_port = recovered.chunk_port;
+        let recovered_contract = recovered.contract;
+        let recovered_version = recovered.version;
+
+        assert_eq!(recovered_hash, original.capability_hash);
+        assert_eq!(recovered_pubkey, original.public_key);
+        assert_eq!(recovered_session, 9000);
+        assert_eq!(recovered_chunk_port, 9001);
+        assert_eq!(recovered_contract, Contract::Bulk as u8);
+        assert_eq!(recovered_version, 7);
     }
 
     #[test]
