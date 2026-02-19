@@ -201,7 +201,7 @@ jobs:
     needs: create-release
     strategy:
       matrix:
-        os: [macos-latest, ubuntu-latest]
+        os: [ubuntu-latest]
 
     steps:
       - uses: actions/checkout@v4

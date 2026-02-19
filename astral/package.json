@@ -35,7 +35,7 @@
   },
   "build": {
     "appId": "com.astral.ui",
-    "productName": "Astral",
+    "productName": "astral",
     "directories": {
       "output": "dist-electron"
     },
