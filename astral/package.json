@@ -1,27 +1,67 @@
 {
   "name": "astral",
-  "private": true,
   "version": "0.1.0",
-  "type": "module",
+  "description": "Desktop UI for Summit Protocol",
+  "main": "main.js",
   "scripts": {
-    "dev": "vite",
+    "start": "electron .",
+    "dev": "concurrently \"npm run vite\" \"wait-on http://localhost:5173 && electron .\"",
+    "vite": "vite",
     "build": "vite build",
-    "lint": "eslint .",
-    "preview": "vite preview"
+    "build:electron": "npm run build && electron-builder",
+    "build:all": "npm run build && electron-builder -mwl"
+  },
+  "keywords": [
+    "astral",
+    "summit",
+    "p2p",
+    "mesh",
+    "networking"
+  ],
+  "author": "Ivy Dearest",
+  "license": "MIT",
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.2.1",
+    "concurrently": "^8.2.2",
+    "electron": "^40.6.0",
+    "electron-builder": "^26.8.1",
+    "vite": "^6.4.1",
+    "wait-on": "^7.2.0"
   },
   "dependencies": {
-    "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
   },
-  "devDependencies": {
-    "@eslint/js": "^9.39.1",
-    "@types/react": "^19.2.7",
-    "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^5.1.1",
-    "eslint": "^9.39.1",
-    "eslint-plugin-react-hooks": "^7.0.1",
-    "eslint-plugin-react-refresh": "^0.4.24",
-    "globals": "^16.5.0",
-    "vite": "^7.3.1"
+  "build": {
+    "appId": "com.astral.ui",
+    "productName": "Astral",
+    "directories": {
+      "output": "dist-electron"
+    },
+    "files": [
+      "dist/**/*",
+      "main.js",
+      "preload.js"
+    ],
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Network"
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.networking"
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    }
   }
 }

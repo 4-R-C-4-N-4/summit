@@ -193,3 +193,34 @@ jobs:
           asset_path: ./target/aarch64-unknown-linux-gnu/release/summit-aarch64-unknown-linux-gnu.tar.gz
           asset_name: summit-aarch64-unknown-linux-gnu.tar.gz
           asset_content_type: application/gzip
+
+    release-ui:
+        name: Build Desktop UI
+        runs-on: ${{ matrix.os }}
+        needs: create-release
+        strategy:
+            matrix:
+            os: [ubuntu-latest]
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Setup Node.js
+            uses: actions/setup-node@v4
+            with:
+                node-version: '20'
+
+            - name: Build UI
+            run: |
+                cd astral
+                npm ci
+                npm run build:electron
+
+            - name: Upload AppImage (Linux)
+            if: matrix.os == 'ubuntu-latest'
+            uses: actions/upload-release-asset@v1
+            with:
+                upload_url: ${{ needs.create-release.outputs.upload_url }}
+                asset_path: ./astral/dist-electron/astral-*.AppImage
+                asset_name: astral-linux.AppImage
+                asset_content_type: application/octet-stream
+

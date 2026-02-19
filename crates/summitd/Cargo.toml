@@ -29,5 +29,3 @@ tower-http = { version = "0.6.8", features = ["cors"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 blake3 = "1.5"
 
-[features]
-embed-ui = ["dep:rust-embed", "dep:mime_guess"]
