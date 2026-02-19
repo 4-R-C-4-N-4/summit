@@ -29,7 +29,6 @@ use mime_guess;
 #[cfg(feature = "embed-ui")]
 #[derive(RustEmbed)]
 #[folder = "../astral/dist"]
-// struct WebAssets;
 
 #[derive(Clone)]
 pub struct StatusState {
@@ -622,64 +621,6 @@ async fn handle_schema_list() -> Json<SchemaListResponse> {
     Json(SchemaListResponse { schemas })
 }
 
-// ── Static Files (SPA) ────────────────────────────────────────────────────────
-
-// #[cfg(feature = "embed-ui")]
-// async fn serve_static(uri: axum::http::Uri) -> impl IntoResponse {
-//     let path = uri.path().trim_start_matches('/');
-//
-//     let file_path = if path.is_empty() || !path.contains('.') {
-//         "index.html"
-//     } else {
-//         path
-//     };
-//
-//     match WebAssets::get(file_path) {
-//         Some(content) => {
-//             let mime = mime_guess::from_path(file_path).first_or_octet_stream();
-//             Response::builder()
-//             .status(HttpStatusCode::OK)
-//             .header(header::CONTENT_TYPE, mime.as_ref())
-//             .body(Body::from(content.data))
-//             .unwrap()
-//         }
-//         None => {
-//             if let Some(index) = WebAssets::get("index.html") {
-//                 Response::builder()
-//                 .status(HttpStatusCode::OK)
-//                 .header(header::CONTENT_TYPE, "text/html")
-//                 .body(Body::from(index.data))
-//                 .unwrap()
-//             } else {
-//                 Response::builder()
-//                 .status(HttpStatusCode::NOT_FOUND)
-//                 .body(Body::from("Not found"))
-//                 .unwrap()
-//             }
-//         }
-//     }
-// }
-//
-// #[cfg(not(feature = "embed-ui"))]
-// async fn serve_static(_uri: axum::http::Uri) -> impl IntoResponse {
-//     Response::builder()
-//     .status(HttpStatusCode::OK)
-//     .header(header::CONTENT_TYPE, "text/html")
-//     .body(Body::from(
-//         "<!DOCTYPE html>
-//         <html>
-//         <head><title>Summit API</title></head>
-//         <body>
-//         <h1>Summit API Server</h1>
-//         <p>API available at <code>/api/*</code></p>
-//         <p>Build with UI: <code>cargo build --features embed-ui</code></p>
-//         </body>
-//         </html>"
-//     ))
-//     .unwrap()
-// }
-
-
 // ── Router ────────────────────────────────────────────────────────────────────
 
 pub async fn serve(state: StatusState, port: u16) -> anyhow::Result<()> {
@@ -713,7 +654,6 @@ pub async fn serve(state: StatusState, port: u16) -> anyhow::Result<()> {
     // Combine API and static files
     let app = Router::new()
     .nest("/api", api_routes)
-    .fallback(serve_static)  // Catch-all for static files and SPA routing
     .layer(cors);
 
     let listener = TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
