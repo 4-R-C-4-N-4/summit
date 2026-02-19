@@ -15,6 +15,7 @@ struct StatusResponse {
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 struct SessionInfo {
     session_id:       String,
     peer:             String,
@@ -31,6 +32,7 @@ struct PeersResponse {
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 struct PeerInfo {
     public_key:      String,
         addr:            String,

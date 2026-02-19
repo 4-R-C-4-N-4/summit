@@ -201,7 +201,7 @@ fn summit_ctl_path() -> std::path::PathBuf {
         .parent().unwrap()
         .join("target/debug/summit-ctl")
 }
-/*
+
 #[test]
 fn test_file_transfer_two_nodes() {
     if !netns_available() {
@@ -239,20 +239,18 @@ fn test_file_transfer_two_nodes() {
     // Wait for session establishment
     thread::sleep(Duration::from_secs(5));
     
-    let peers_a = exec_in_netns("summit-a", &["curl", "-s", "http://127.0.0.1:9001/api/peers"])
-    .expect("get peers from a");
-    let peers_b = exec_in_netns("summit-b", &["curl", "-s", "http://127.0.0.1:9001/api/peers"])
-    .expect("get peers from b");
+    let peers_a = netns_exec("summit-a", &["curl", "-s", "http://127.0.0.1:9001/api/peers"]);
+    let peers_b = netns_exec("summit-b", &["curl", "-s", "http://127.0.0.1:9001/api/peers"]);
 
     println!("peers_a: {}", peers_a);
     println!("peers_b: {}", peers_b);
 
-    // exec_in_netns("summit-a", &["curl", "-X", "POST", "http://127.0.0.1:9001/api/trust/add",
+    // netns_exec("summit-a", &["curl", "-X", "POST", "http://127.0.0.1:9001/api/trust/add",
     //               "-H", "Content-Type: application/json",
     //               "-d", &format!(r#"{{"public_key":"{}"}}"#, pubkey_b)])
     // .expect("trust on a");
     //
-    // exec_in_netns("summit-b", &["curl", "-X", "POST", "http://127.0.0.1:9001/api/trust/add",
+    // netns_exec("summit-b", &["curl", "-X", "POST", "http://127.0.0.1:9001/api/trust/add",
     //               "-H", "Content-Type: application/json",
     //               "-d", &format!(r#"{{"public_key":"{}"}}"#, pubkey_a)])
     // .expect("trust on b");
@@ -378,4 +376,4 @@ fn test_status_shows_session() {
     // Cleanup
     node_a.kill().ok();
     node_b.kill().ok();
-}*/
+}
