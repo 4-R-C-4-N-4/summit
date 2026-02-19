@@ -1,5 +1,5 @@
 //! Message schema for rich P2P messaging
-//! 
+//!
 //! Supports text, images, videos, audio, files, reactions, edits, and typing indicators.
 
 use serde::{Deserialize, Serialize};
@@ -41,16 +41,16 @@ impl MessageType {
 pub struct MessageMetadata {
     /// MIME type (e.g., "image/jpeg", "video/mp4")
     pub mime_type: Option<String>,
-    
+
     /// File size in bytes
     pub size_bytes: Option<u64>,
-    
+
     /// Original filename
     pub filename: Option<String>,
-    
+
     /// Image/video dimensions
     pub dimensions: Option<(u32, u32)>,
-    
+
     /// Audio/video duration in seconds
     pub duration_secs: Option<f32>,
 }
@@ -60,56 +60,54 @@ pub struct MessageMetadata {
 #[serde(tag = "type", content = "data")]
 pub enum MessageContent {
     /// Plain text message
-    Text {
-        text: String,
-    },
-    
+    Text { text: String },
+
     /// Media (image/video/audio) with optional preview
     Media {
         /// BLAKE3 hash of the media content
         content_hash: [u8; 32],
-        
+
         /// Number of chunks for this media
         chunk_count: u32,
-        
+
         /// Base64-encoded thumbnail/preview (for images/videos)
         /// Max 32KB for efficient transmission
         preview: Option<Vec<u8>>,
     },
-    
+
     /// File attachment
     File {
         /// BLAKE3 hash of the file content
         content_hash: [u8; 32],
-        
+
         /// Number of chunks
         chunk_count: u32,
     },
-    
+
     /// Emoji reaction to another message
     Reaction {
         /// Message ID being reacted to
         target_msg_id: [u8; 32],
-        
+
         /// Unicode emoji (e.g., "👍", "❤️")
         emoji: String,
     },
-    
+
     /// Edit to a previous message
     Edit {
         /// Original message ID
         original_msg_id: [u8; 32],
-        
+
         /// New content
         new_content: String,
     },
-    
+
     /// Delete/retract a message
     Delete {
         /// Message ID to delete
         target_msg_id: [u8; 32],
     },
-    
+
     /// Typing indicator (ephemeral, not stored)
     Typing {
         /// Whether user is typing (true) or stopped (false)
@@ -122,40 +120,36 @@ pub enum MessageContent {
 pub struct MessageChunk {
     /// Unique message ID (BLAKE3 hash of content + timestamp + sender)
     pub msg_id: [u8; 32],
-    
+
     /// Message type
     pub msg_type: MessageType,
-    
+
     /// Unix timestamp in milliseconds
     pub timestamp: u64,
-    
+
     /// Sender's public key
     pub sender: [u8; 32],
-    
+
     /// Recipient's public key (for DMs)
     pub recipient: [u8; 32],
-    
+
     /// Message content
     pub content: MessageContent,
-    
+
     /// Metadata
     pub metadata: MessageMetadata,
 }
 
 impl MessageChunk {
     /// Create a new text message
-    pub fn text(
-        sender: [u8; 32],
-        recipient: [u8; 32],
-        text: String,
-    ) -> Self {
+    pub fn text(sender: [u8; 32], recipient: [u8; 32], text: String) -> Self {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
-        
+
         let msg_id = Self::generate_id(&sender, &recipient, timestamp, &text);
-        
+
         Self {
             msg_id,
             msg_type: MessageType::Text,
@@ -172,7 +166,7 @@ impl MessageChunk {
             },
         }
     }
-    
+
     /// Create a media message (image/video/audio)
     pub fn media(
         sender: [u8; 32],
@@ -187,9 +181,9 @@ impl MessageChunk {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
-        
+
         let msg_id = Self::generate_id(&sender, &recipient, timestamp, &content_hash);
-        
+
         Self {
             msg_id,
             msg_type,
@@ -204,7 +198,7 @@ impl MessageChunk {
             metadata,
         }
     }
-    
+
     /// Create a reaction
     pub fn reaction(
         sender: [u8; 32],
@@ -216,9 +210,9 @@ impl MessageChunk {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
-        
+
         let msg_id = Self::generate_id(&sender, &recipient, timestamp, &emoji);
-        
+
         Self {
             msg_id,
             msg_type: MessageType::Reaction,
@@ -238,7 +232,7 @@ impl MessageChunk {
             },
         }
     }
-    
+
     /// Generate message ID from content
     fn generate_id(
         sender: &[u8; 32],
@@ -247,24 +241,24 @@ impl MessageChunk {
         content: &impl AsRef<[u8]>,
     ) -> [u8; 32] {
         use blake3::Hasher;
-        
+
         let mut hasher = Hasher::new();
         hasher.update(sender);
         hasher.update(recipient);
         hasher.update(&timestamp.to_le_bytes());
         hasher.update(content.as_ref());
-        
+
         let hash = hasher.finalize();
         let mut id = [0u8; 32];
         id.copy_from_slice(hash.as_bytes());
         id
     }
-    
+
     /// Serialize to bytes for transmission
     pub fn to_bytes(&self) -> Vec<u8> {
         serde_json::to_vec(self).expect("message serialization failed")
     }
-    
+
     /// Deserialize from bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self, serde_json::Error> {
         serde_json::from_slice(data)
@@ -291,32 +285,32 @@ pub enum MessageStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_text_message() {
         let sender = [1u8; 32];
         let recipient = [2u8; 32];
         let msg = MessageChunk::text(sender, recipient, "Hello!".to_string());
-        
+
         assert_eq!(msg.msg_type, MessageType::Text);
         assert_eq!(msg.sender, sender);
         assert_eq!(msg.recipient, recipient);
-        
+
         match msg.content {
             MessageContent::Text { text } => assert_eq!(text, "Hello!"),
             _ => panic!("Expected text content"),
         }
     }
-    
+
     #[test]
     fn test_serialization() {
         let sender = [1u8; 32];
         let recipient = [2u8; 32];
         let msg = MessageChunk::text(sender, recipient, "Test".to_string());
-        
+
         let bytes = msg.to_bytes();
         let decoded = MessageChunk::from_bytes(&bytes).unwrap();
-        
+
         assert_eq!(msg.msg_id, decoded.msg_id);
         assert_eq!(msg.timestamp, decoded.timestamp);
     }

@@ -10,26 +10,26 @@
 use std::time::Instant;
 use summit_core::wire::Contract;
 
-const BULK_RATE:       f64 = 64.0;
-const BULK_BURST:      f64 = 32.0;
-const BG_RATE:         f64 = 8.0;
-const BG_BURST:        f64 = 4.0;
+const BULK_RATE: f64 = 64.0;
+const BULK_BURST: f64 = 32.0;
+const BG_RATE: f64 = 8.0;
+const BG_BURST: f64 = 4.0;
 
 #[derive(Debug)]
 pub struct TokenBucket {
-    tokens:      f64,
-    capacity:    f64,
+    tokens: f64,
+    capacity: f64,
     refill_rate: f64,
     last_refill: Instant,
-    contract:    Contract,
+    contract: Contract,
 }
 
 impl TokenBucket {
     pub fn new(contract: Contract) -> Self {
         let (capacity, refill_rate) = match contract {
-            Contract::Realtime   => (f64::INFINITY, f64::INFINITY),
-            Contract::Bulk       => (BULK_BURST,    BULK_RATE),
-            Contract::Background => (BG_BURST,      BG_RATE),
+            Contract::Realtime => (f64::INFINITY, f64::INFINITY),
+            Contract::Bulk => (BULK_BURST, BULK_RATE),
+            Contract::Background => (BG_BURST, BG_RATE),
         };
         Self {
             tokens: capacity,
@@ -47,7 +47,7 @@ impl TokenBucket {
         }
 
         // Refill based on elapsed time
-        let now     = Instant::now();
+        let now = Instant::now();
         let elapsed = now.duration_since(self.last_refill).as_secs_f64();
         self.tokens = (self.tokens + elapsed * self.refill_rate).min(self.capacity);
         self.last_refill = now;
@@ -60,7 +60,11 @@ impl TokenBucket {
         }
     }
 
-    pub fn contract(&self) -> Contract { self.contract }
+    pub fn contract(&self) -> Contract {
+        self.contract
+    }
 
-    pub fn tokens(&self) -> f64 { self.tokens.min(self.capacity) }
+    pub fn tokens(&self) -> f64 {
+        self.tokens.min(self.capacity)
+    }
 }

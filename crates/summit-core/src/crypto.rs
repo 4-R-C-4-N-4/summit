@@ -10,11 +10,11 @@
 //! All key material derives ZeroizeOnDrop — wiped from memory when dropped.
 //! There is no unsafe code in this module.
 
+use rand::RngCore;
 use snow::{Builder, HandshakeState, TransportState};
+use thiserror::Error;
 use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
-use thiserror::Error;
-use rand::RngCore;
 
 // ── BLAKE3 ────────────────────────────────────────────────────────────────────
 
@@ -32,10 +32,7 @@ pub fn hash(data: &[u8]) -> [u8; 32] {
 /// contributions from both sides of the handshake.
 ///
 ///   session_id = BLAKE3(initiator_nonce || responder_nonce)
-pub fn derive_session_id(
-    initiator_nonce: &[u8; 16],
-    responder_nonce: &[u8; 16],
-) -> [u8; 32] {
+pub fn derive_session_id(initiator_nonce: &[u8; 16], responder_nonce: &[u8; 16]) -> [u8; 32] {
     let mut combined = [0u8; 32];
     combined[..16].copy_from_slice(initiator_nonce);
     combined[16..].copy_from_slice(responder_nonce);
@@ -141,7 +138,7 @@ pub fn generate_nonce() -> [u8; 16] {
 /// wants to open a session. It sends message 1, receives message 2,
 /// and produces a completed Session.
 pub struct NoiseInitiator {
-    state:           HandshakeState,
+    state: HandshakeState,
     initiator_nonce: [u8; 16],
 }
 
@@ -152,9 +149,9 @@ impl NoiseInitiator {
     /// to the responder (embedded in HandshakeInit on the wire).
     pub fn new(keypair: &Keypair) -> Result<(Self, Vec<u8>), CryptoError> {
         let state = Builder::new(NOISE_PATTERN.parse().map_err(|_| CryptoError::BadPattern)?)
-        .local_private_key(&*keypair.private)
-        .build_initiator()
-        .map_err(CryptoError::Noise)?;
+            .local_private_key(&*keypair.private)
+            .build_initiator()
+            .map_err(CryptoError::Noise)?;
 
         let nonce = generate_nonce();
 
@@ -165,9 +162,9 @@ impl NoiseInitiator {
 
         let mut msg1 = vec![0u8; 48];
         let len = initiator
-        .state
-        .write_message(&[], &mut msg1)
-        .map_err(CryptoError::Noise)?;
+            .state
+            .write_message(&[], &mut msg1)
+            .map_err(CryptoError::Noise)?;
         msg1.truncate(len);
 
         Ok((initiator, msg1))
@@ -193,20 +190,30 @@ impl NoiseInitiator {
         // Read message 2
         let mut payload = vec![0u8; msg2.len()];
         self.state
-        .read_message(msg2, &mut payload)
-        .map_err(CryptoError::Noise)?;
+            .read_message(msg2, &mut payload)
+            .map_err(CryptoError::Noise)?;
 
         // Write message 3 — initiator's encrypted static key + payload
         let mut msg3 = vec![0u8; 96];
-        let len = self.state
-        .write_message(&[], &mut msg3)
-        .map_err(CryptoError::Noise)?;
+        let len = self
+            .state
+            .write_message(&[], &mut msg3)
+            .map_err(CryptoError::Noise)?;
         msg3.truncate(len);
 
-        let transport = self.state.into_transport_mode().map_err(CryptoError::Noise)?;
+        let transport = self
+            .state
+            .into_transport_mode()
+            .map_err(CryptoError::Noise)?;
         let session_id = derive_session_id(&self.initiator_nonce, responder_nonce);
 
-        Ok((Session { session_id, transport }, msg3))
+        Ok((
+            Session {
+                session_id,
+                transport,
+            },
+            msg3,
+        ))
     }
 }
 
@@ -216,7 +223,7 @@ impl NoiseInitiator {
 /// HandshakeInit from an initiator. It processes message 1, writes
 /// message 2, and produces a completed Session.
 pub struct NoiseResponder {
-    state:          HandshakeState,
+    state: HandshakeState,
     responder_nonce: [u8; 16],
 }
 
@@ -254,19 +261,20 @@ impl NoiseResponder {
         // Read message 1
         let mut payload = vec![0u8; msg1.len()];
         self.state
-        .read_message(msg1, &mut payload)
-        .map_err(CryptoError::Noise)?;
+            .read_message(msg1, &mut payload)
+            .map_err(CryptoError::Noise)?;
 
         // Write message 2
         let mut msg2 = vec![0u8; 96];
-        let len = self.state
-        .write_message(&[], &mut msg2)
-        .map_err(CryptoError::Noise)?;
+        let len = self
+            .state
+            .write_message(&[], &mut msg2)
+            .map_err(CryptoError::Noise)?;
         msg2.truncate(len);
 
         Ok((
             ResponderPending {
-                state:           self.state,
+                state: self.state,
                 responder_nonce: self.responder_nonce,
                 initiator_nonce: *initiator_nonce,
             },
@@ -277,7 +285,7 @@ impl NoiseResponder {
 
 /// Responder waiting for message 3 from the initiator.
 pub struct ResponderPending {
-    state:           HandshakeState,
+    state: HandshakeState,
     responder_nonce: [u8; 16],
     initiator_nonce: [u8; 16],
 }
@@ -287,16 +295,21 @@ impl ResponderPending {
     pub fn finish(mut self, msg3: &[u8]) -> Result<Session, CryptoError> {
         let mut payload = vec![0u8; msg3.len()];
         self.state
-        .read_message(msg3, &mut payload)
-        .map_err(CryptoError::Noise)?;
+            .read_message(msg3, &mut payload)
+            .map_err(CryptoError::Noise)?;
 
-        let transport = self.state.into_transport_mode().map_err(CryptoError::Noise)?;
+        let transport = self
+            .state
+            .into_transport_mode()
+            .map_err(CryptoError::Noise)?;
         let session_id = derive_session_id(&self.initiator_nonce, &self.responder_nonce);
 
-        Ok(Session { session_id, transport })
+        Ok(Session {
+            session_id,
+            transport,
+        })
     }
 }
-
 
 // ── Session ───────────────────────────────────────────────────────────────────
 
@@ -384,17 +397,15 @@ mod tests {
         (i_session, r_session)
     }
 
-
     // ── BLAKE3 ────────────────────────────────────────────────────────────────
 
     #[test]
     fn hash_known_vector() {
         // BLAKE3 official test vector for the empty input
         let expected = [
-            0xaf, 0x13, 0x49, 0xb9, 0xf5, 0xf9, 0xa1, 0xa6,
-            0xa0, 0x40, 0x4d, 0xea, 0x36, 0xdc, 0xc9, 0x49,
-            0x9b, 0xcb, 0x25, 0xc9, 0xad, 0xc1, 0x12, 0xb7,
-            0xcc, 0x9a, 0x93, 0xca, 0xe4, 0x1f, 0x32, 0x62,
+            0xaf, 0x13, 0x49, 0xb9, 0xf5, 0xf9, 0xa1, 0xa6, 0xa0, 0x40, 0x4d, 0xea, 0x36, 0xdc,
+            0xc9, 0x49, 0x9b, 0xcb, 0x25, 0xc9, 0xad, 0xc1, 0x12, 0xb7, 0xcc, 0x9a, 0x93, 0xca,
+            0xe4, 0x1f, 0x32, 0x62,
         ];
         assert_eq!(hash(b""), expected);
     }
@@ -460,9 +471,18 @@ mod tests {
     #[test]
     fn print_wire_struct_sizes() {
         use crate::wire::*;
-        println!("HandshakeInit wire size:     {}", std::mem::size_of::<HandshakeInit>());
-        println!("HandshakeResponse wire size: {}", std::mem::size_of::<HandshakeResponse>());
-        println!("HandshakeComplete wire size: {}", std::mem::size_of::<HandshakeComplete>());
+        println!(
+            "HandshakeInit wire size:     {}",
+            std::mem::size_of::<HandshakeInit>()
+        );
+        println!(
+            "HandshakeResponse wire size: {}",
+            std::mem::size_of::<HandshakeResponse>()
+        );
+        println!(
+            "HandshakeComplete wire size: {}",
+            std::mem::size_of::<HandshakeComplete>()
+        );
         println!("Expected noise msg1 size: 32");
         println!("Expected noise msg2 size: 96");
         println!("Expected noise msg3 size: 64");
@@ -500,14 +520,18 @@ mod tests {
         let mut ciphertext = Vec::new();
         let mut recovered = Vec::new();
 
-        initiator_session.encrypt(plaintext, &mut ciphertext).unwrap();
+        initiator_session
+            .encrypt(plaintext, &mut ciphertext)
+            .unwrap();
 
         // Ciphertext must be longer than plaintext (MAC appended)
         assert!(ciphertext.len() > plaintext.len());
         // Ciphertext must not equal plaintext
         assert_ne!(ciphertext.as_slice(), plaintext.as_slice());
 
-        responder_session.decrypt(&ciphertext, &mut recovered).unwrap();
+        responder_session
+            .decrypt(&ciphertext, &mut recovered)
+            .unwrap();
         assert_eq!(recovered.as_slice(), plaintext.as_slice());
     }
 
@@ -535,7 +559,9 @@ mod tests {
         let (mut initiator_session, mut responder_session) = completed_sessions();
 
         let mut ct = Vec::new();
-        initiator_session.encrypt(b"important data", &mut ct).unwrap();
+        initiator_session
+            .encrypt(b"important data", &mut ct)
+            .unwrap();
 
         // Flip a bit in the ciphertext
         ct[4] ^= 0xFF;

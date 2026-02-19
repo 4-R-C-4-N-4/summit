@@ -8,8 +8,8 @@
 //! zerocopy derives for safe, allocation-free serialization. There is no
 //! unsafe code in this module.
 
-use zerocopy::{AsBytes, FromBytes, FromZeroes};
 use static_assertions::assert_eq_size;
+use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 // ── Chunk Header ─────────────────────────────────────────────────────────────
 
@@ -151,11 +151,11 @@ assert_eq_size!(HandshakeComplete, [u8; 64]);
 pub enum Contract {
     /// Low latency, loss-tolerant. Audio, input events, telemetry.
     /// Chunks are never buffered. Prefer freshness over completeness.
-    Realtime   = 0x01,
+    Realtime = 0x01,
 
     /// High throughput, loss-intolerant. File transfer, sync.
     /// Chunks are buffered and retransmitted until acknowledged.
-    Bulk       = 0x02,
+    Bulk = 0x02,
 
     /// Low priority, interruptible. Replication, background indexing.
     /// Transmitted only when no Realtime or Bulk traffic is active.
@@ -176,7 +176,9 @@ impl TryFrom<u8> for Contract {
 }
 
 impl From<Contract> for u8 {
-    fn from(c: Contract) -> u8 { c as u8 }
+    fn from(c: Contract) -> u8 {
+        c as u8
+    }
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -235,11 +237,11 @@ mod tests {
     fn zeroed_chunk_header() -> ChunkHeader {
         ChunkHeader {
             content_hash: [0u8; 32],
-            schema_id:    [0u8; 32],
-            type_tag:     0,
-            length:       0,
-            flags:        0,
-            version:      CHUNK_VERSION,
+            schema_id: [0u8; 32],
+            type_tag: 0,
+            length: 0,
+            flags: 0,
+            version: CHUNK_VERSION,
         }
     }
 
@@ -247,11 +249,11 @@ mod tests {
     fn chunk_header_round_trip() {
         let original = ChunkHeader {
             content_hash: [0xab; 32],
-            schema_id:    [0xcd; 32],
-            type_tag:     0x0102,
-            length:       1024,
-            flags:        0x01,
-            version:      CHUNK_VERSION,
+            schema_id: [0xcd; 32],
+            type_tag: 0x0102,
+            length: 1024,
+            flags: 0x01,
+            version: CHUNK_VERSION,
         };
 
         let bytes = original.as_bytes();
@@ -259,17 +261,13 @@ mod tests {
 
         let recovered = ChunkHeader::read_from(bytes).unwrap();
         assert_eq!(recovered.content_hash, original.content_hash);
-        assert_eq!(recovered.schema_id,    original.schema_id);
+        assert_eq!(recovered.schema_id, original.schema_id);
         // type_tag and length are packed — read via copy to avoid unaligned access
-        let type_tag: u16 = u16::from_ne_bytes(
-            bytes[64..66].try_into().unwrap()
-        );
-        let length: u32 = u32::from_ne_bytes(
-            bytes[66..70].try_into().unwrap()
-        );
+        let type_tag: u16 = u16::from_ne_bytes(bytes[64..66].try_into().unwrap());
+        let length: u32 = u32::from_ne_bytes(bytes[66..70].try_into().unwrap());
         assert_eq!(type_tag, 0x0102);
-        assert_eq!(length,   1024);
-        assert_eq!(recovered.flags,   original.flags);
+        assert_eq!(length, 1024);
+        assert_eq!(recovered.flags, original.flags);
         assert_eq!(recovered.version, original.version);
     }
 
@@ -277,12 +275,12 @@ mod tests {
     fn announcement_round_trip() {
         let original = CapabilityAnnouncement {
             capability_hash: [0x11; 32],
-            public_key:      [0x22; 32],
-            version:         7,
-            session_port:    9000,
-            chunk_port:      9001,
-            contract:        Contract::Bulk as u8,
-            flags:           0,
+            public_key: [0x22; 32],
+            version: 7,
+            session_port: 9000,
+            chunk_port: 9001,
+            contract: Contract::Bulk as u8,
+            flags: 0,
         };
 
         let bytes = original.as_bytes();
@@ -308,28 +306,28 @@ mod tests {
     #[test]
     fn handshake_init_round_trip() {
         let original = HandshakeInit {
-            nonce:           [0x55; 16],
+            nonce: [0x55; 16],
             capability_hash: [0x44; 32],
-            noise_msg:       [0x33; 32],
+            noise_msg: [0x33; 32],
         };
         let bytes = original.as_bytes();
         assert_eq!(bytes.len(), 80);
         let recovered = HandshakeInit::read_from_prefix(bytes).unwrap();
-        assert_eq!(recovered.nonce,            original.nonce);
-        assert_eq!(recovered.capability_hash,  original.capability_hash);
-        assert_eq!(recovered.noise_msg,        original.noise_msg);
+        assert_eq!(recovered.nonce, original.nonce);
+        assert_eq!(recovered.capability_hash, original.capability_hash);
+        assert_eq!(recovered.noise_msg, original.noise_msg);
     }
 
     #[test]
     fn handshake_response_round_trip() {
         let original = HandshakeResponse {
-            nonce:     [0x77; 16],
-            noise_msg: [0x88; 96],  // changed from 128
+            nonce: [0x77; 16],
+            noise_msg: [0x88; 96], // changed from 128
         };
         let bytes = original.as_bytes();
-        assert_eq!(bytes.len(), 112);  // changed from 144
+        assert_eq!(bytes.len(), 112); // changed from 144
         let recovered = HandshakeResponse::read_from_prefix(bytes).unwrap();
-        assert_eq!(recovered.nonce,     original.nonce);
+        assert_eq!(recovered.nonce, original.nonce);
         assert_eq!(recovered.noise_msg, original.noise_msg);
     }
 
@@ -344,8 +342,8 @@ mod tests {
 
     #[test]
     fn contract_to_u8() {
-        assert_eq!(u8::from(Contract::Realtime),   0x01);
-        assert_eq!(u8::from(Contract::Bulk),       0x02);
+        assert_eq!(u8::from(Contract::Realtime), 0x01);
+        assert_eq!(u8::from(Contract::Bulk), 0x02);
         assert_eq!(u8::from(Contract::Background), 0x03);
     }
 

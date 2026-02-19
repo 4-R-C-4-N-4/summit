@@ -6,22 +6,22 @@
 
 use bytes::Bytes;
 
-pub mod send;
 pub mod receive;
+pub mod send;
 
 /// A chunk ready to be sent.
 #[derive(Debug, Clone)]
 pub struct OutgoingChunk {
-    pub type_tag:  u16,
+    pub type_tag: u16,
     pub schema_id: [u8; 32],
-    pub payload:   Bytes,
+    pub payload: Bytes,
 }
 
 /// A chunk received and verified.
 #[derive(Debug, Clone)]
 pub struct IncomingChunk {
     pub content_hash: [u8; 32],
-    pub type_tag:     u16,
-    pub schema_id:    [u8; 32],
-    pub payload:      Bytes,
+    pub type_tag: u16,
+    pub schema_id: [u8; 32],
+    pub payload: Bytes,
 }

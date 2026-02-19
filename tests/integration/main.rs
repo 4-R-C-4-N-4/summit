@@ -10,11 +10,11 @@
 //! The namespace environment is shared — tests must not
 //! interfere with each other's interfaces.
 
-use std::process::Command;
-use anyhow::{Context, Result, bail};
-use std::time::Duration;
-use std::thread;
+use anyhow::{bail, Context, Result};
 use serde_json::Value;
+use std::process::Command;
+use std::thread;
+use std::time::Duration;
 
 // ── Harness ───────────────────────────────────────────────────────────────────
 
@@ -27,10 +27,7 @@ pub const VETH_B: &str = "veth-b";
 /// Kill all running summitd processes to ensure clean test state
 fn cleanup_summitd() {
     // Kill any existing summitd processes
-    Command::new("pkill")
-    .args(&["-9", "summitd"])
-    .output()
-    .ok();
+    Command::new("pkill").args(&["-9", "summitd"]).output().ok();
 
     // Small delay to ensure processes are gone
     thread::sleep(Duration::from_millis(500));
@@ -101,12 +98,12 @@ fn test_namespaces_exist() {
         return;
     }
 
-    let out_a = netns_exec(NS_A, &["ip", "link", "show", VETH_A])
-        .expect("veth-a should exist in summit-a");
+    let out_a =
+        netns_exec(NS_A, &["ip", "link", "show", VETH_A]).expect("veth-a should exist in summit-a");
     assert!(out_a.contains(VETH_A), "veth-a not found in summit-a");
 
-    let out_b = netns_exec(NS_B, &["ip", "link", "show", VETH_B])
-        .expect("veth-b should exist in summit-b");
+    let out_b =
+        netns_exec(NS_B, &["ip", "link", "show", VETH_B]).expect("veth-b should exist in summit-b");
     assert!(out_b.contains(VETH_B), "veth-b not found in summit-b");
 
     println!("Both namespaces exist with correct interfaces.");
@@ -120,16 +117,20 @@ fn test_link_local_addresses_assigned() {
         return;
     }
 
-    let addr_a = link_local_addr(NS_A, VETH_A)
-        .expect("summit-a should have a link-local address");
-    let addr_b = link_local_addr(NS_B, VETH_B)
-        .expect("summit-b should have a link-local address");
+    let addr_a = link_local_addr(NS_A, VETH_A).expect("summit-a should have a link-local address");
+    let addr_b = link_local_addr(NS_B, VETH_B).expect("summit-b should have a link-local address");
 
     println!("summit-a: {addr_a}");
     println!("summit-b: {addr_b}");
 
-    assert!(addr_a.starts_with("fe80::"), "expected link-local address in summit-a");
-    assert!(addr_b.starts_with("fe80::"), "expected link-local address in summit-b");
+    assert!(
+        addr_a.starts_with("fe80::"),
+        "expected link-local address in summit-a"
+    );
+    assert!(
+        addr_b.starts_with("fe80::"),
+        "expected link-local address in summit-b"
+    );
     assert_ne!(addr_a, addr_b, "addresses should be different");
 }
 
@@ -143,20 +144,20 @@ fn test_ping_a_to_b() {
     }
 
     // Get B's address, but scope it to A's interface name
-    let addr_b_raw = link_local_addr(NS_B, VETH_B)
-    .expect("summit-b should have a link-local address");
+    let addr_b_raw =
+        link_local_addr(NS_B, VETH_B).expect("summit-b should have a link-local address");
     // strip the %veth-b scope and replace with %veth-a (A's local interface)
     let addr_b = addr_b_raw
-    .split('%')
-    .next()
-    .map(|a| format!("{a}%{VETH_A}"))
-    .unwrap();
+        .split('%')
+        .next()
+        .map(|a| format!("{a}%{VETH_A}"))
+        .unwrap();
 
     println!("Pinging {addr_b} from summit-a...");
     let result = netns_exec(NS_A, &["ping", "-6", "-c", "3", "-W", "2", &addr_b]);
     match &result {
         Ok(out) => println!("{out}"),
-        Err(e)  => panic!("ping6 from summit-a to summit-b failed: {e}"),
+        Err(e) => panic!("ping6 from summit-a to summit-b failed: {e}"),
     }
     assert!(result.is_ok());
 }
@@ -169,25 +170,24 @@ fn test_ping_b_to_a() {
     }
 
     // Get A's address, but scope it to B's interface name
-    let addr_a_raw = link_local_addr(NS_A, VETH_A)
-    .expect("summit-a should have a link-local address");
+    let addr_a_raw =
+        link_local_addr(NS_A, VETH_A).expect("summit-a should have a link-local address");
     let addr_a = addr_a_raw
-    .split('%')
-    .next()
-    .map(|a| format!("{a}%{VETH_B}"))
-    .unwrap();
+        .split('%')
+        .next()
+        .map(|a| format!("{a}%{VETH_B}"))
+        .unwrap();
 
     println!("Pinging {addr_a} from summit-b...");
     let result = netns_exec(NS_B, &["ping", "-6", "-c", "3", "-W", "2", &addr_a]);
     match &result {
         Ok(out) => println!("{out}"),
-        Err(e)  => panic!("ping6 from summit-b to summit-a failed: {e}"),
+        Err(e) => panic!("ping6 from summit-b to summit-a failed: {e}"),
     }
     assert!(result.is_ok());
 }
 
 // ── File Transfer Tests ───────────────────────────────────────────────────────
-
 
 // fn summitd_path() -> std::path::PathBuf {
 //     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))

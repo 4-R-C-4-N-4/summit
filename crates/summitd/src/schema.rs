@@ -17,7 +17,6 @@ pub enum KnownSchema {
 }
 
 impl KnownSchema {
-
     pub fn from_id(schema_id: &[u8; 32]) -> Option<Self> {
         // Precomputed at build time
         let test_ping_id = summit_core::crypto::hash(b"summit.test.ping");
@@ -28,7 +27,7 @@ impl KnownSchema {
             Some(Self::TestPing)
         } else if schema_id == &file_chunk_id {
             Some(Self::FileChunk)
-        } else if schema_id ==  &message_id {
+        } else if schema_id == &message_id {
             Some(Self::Message)
         } else {
             None
@@ -48,16 +47,15 @@ impl KnownSchema {
     pub fn validate(&self, payload: &[u8]) -> Result<()> {
         match self {
             Self::TestPing => {
-                let s = std::str::from_utf8(payload)
-                    .context("ping payload must be UTF-8")?;
-                
+                let s = std::str::from_utf8(payload).context("ping payload must be UTF-8")?;
+
                 if !s.starts_with("ping #") {
                     bail!("ping must start with 'ping #', got: {}", s);
                 }
-                
+
                 Ok(())
             }
-            
+
             Self::FileChunk => {
                 // No validation — arbitrary bytes allowed
                 Ok(())
@@ -65,7 +63,7 @@ impl KnownSchema {
             Self::FileData => Ok(()),
             Self::FileMetadata => {
                 serde_json::from_slice::<crate::transfer::FileMetadata>(payload)
-                .context("invalid file metadata JSON")?;
+                    .context("invalid file metadata JSON")?;
                 Ok(())
             }
             Self::Message => Ok(()),
@@ -75,9 +73,9 @@ impl KnownSchema {
     /// Get the schema ID (BLAKE3 hash).
     pub fn id(&self) -> [u8; 32] {
         match self {
-            Self::TestPing    => summit_core::crypto::hash(b"summit.test.ping"),
-            Self::FileChunk   => summit_core::crypto::hash(b"summit.file.chunk"),
-            Self::FileData    => summit_core::crypto::hash(b"summit.file.data"),
+            Self::TestPing => summit_core::crypto::hash(b"summit.test.ping"),
+            Self::FileChunk => summit_core::crypto::hash(b"summit.file.chunk"),
+            Self::FileData => summit_core::crypto::hash(b"summit.file.data"),
             Self::FileMetadata => summit_core::crypto::hash(b"summit.file.metadata"),
             Self::Message => summit_core::crypto::hash(b"summit.message"),
         }
@@ -88,7 +86,7 @@ impl KnownSchema {
         match self {
             Self::TestPing => "summit.test.ping",
             Self::FileChunk => "summit.file.chunk",
-            Self::FileData     => "summit.file.data",
+            Self::FileData => "summit.file.data",
             Self::FileMetadata => "summit.file.metadata",
             Self::Message => "summit.message",
         }
@@ -124,11 +122,11 @@ mod tests {
     #[test]
     fn test_ping_validation() {
         let schema = KnownSchema::TestPing;
-        
+
         // Valid
         assert!(schema.validate(b"ping #1").is_ok());
         assert!(schema.validate(b"ping #999").is_ok());
-        
+
         // Invalid
         assert!(schema.validate(b"pong #1").is_err());
         assert!(schema.validate(b"hello").is_err());
@@ -138,7 +136,7 @@ mod tests {
     #[test]
     fn test_file_chunk_validation() {
         let schema = KnownSchema::FileChunk;
-        
+
         // Everything is valid
         assert!(schema.validate(b"text").is_ok());
         assert!(schema.validate(&[0xFF, 0xFE, 0xFD]).is_ok());

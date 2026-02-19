@@ -9,21 +9,21 @@ const DEFAULT_PORT: u16 = 9001;
 
 #[derive(Deserialize)]
 struct StatusResponse {
-    sessions:         Vec<SessionInfo>,
-    cache:            CacheInfo,
+    sessions: Vec<SessionInfo>,
+    cache: CacheInfo,
     peers_discovered: usize,
 }
 
 #[derive(Deserialize)]
 #[allow(dead_code)]
 struct SessionInfo {
-    session_id:       String,
-    peer:             String,
-    peer_pubkey:      String,
-    contract:         String,
-    chunk_port:       u16,
+    session_id: String,
+    peer: String,
+    peer_pubkey: String,
+    contract: String,
+    chunk_port: u16,
     established_secs: u64,
-    trust_level:      String,
+    trust_level: String,
 }
 
 #[derive(Deserialize)]
@@ -34,21 +34,21 @@ struct PeersResponse {
 #[derive(Deserialize)]
 #[allow(dead_code)]
 struct PeerInfo {
-    public_key:      String,
-        addr:            String,
-        session_port:    u16,
-        chunk_port:      u16,
-        contract:        u8,
-        version:         u32,
-        last_seen_secs:  u64,
-        trust_level:     String,
-        buffered_chunks: usize,
+    public_key: String,
+    addr: String,
+    session_port: u16,
+    chunk_port: u16,
+    contract: u8,
+    version: u32,
+    last_seen_secs: u64,
+    trust_level: String,
+    buffered_chunks: usize,
 }
 
 #[derive(Deserialize)]
 struct CacheInfo {
     chunks: usize,
-    bytes:  u64,
+    bytes: u64,
 }
 
 #[derive(Deserialize)]
@@ -64,7 +64,7 @@ struct TrustListResponse {
 #[derive(Deserialize)]
 struct TrustRule {
     public_key: String,
-        level:      String,
+    level: String,
 }
 
 #[derive(Serialize)]
@@ -74,8 +74,8 @@ struct TrustAddRequest {
 
 #[derive(Deserialize)]
 struct TrustAddResponse {
-    public_key:     String,
-        flushed_chunks: usize,
+    public_key: String,
+    flushed_chunks: usize,
 }
 
 #[derive(Serialize)]
@@ -95,20 +95,20 @@ struct TrustPendingResponse {
 
 #[derive(Deserialize)]
 struct PendingPeer {
-    public_key:      String,
-        buffered_chunks: usize,
+    public_key: String,
+    buffered_chunks: usize,
 }
 
 #[derive(Deserialize)]
 struct SendResponse {
-    filename:    String,
-    bytes:       u64,
+    filename: String,
+    bytes: u64,
     chunks_sent: usize,
 }
 
 #[derive(Deserialize)]
 struct FilesResponse {
-    received:    Vec<String>,
+    received: Vec<String>,
     in_progress: Vec<String>,
 }
 
@@ -120,38 +120,38 @@ fn base_url(port: u16) -> String {
 
 async fn get_json<T: for<'de> Deserialize<'de>>(url: &str) -> Result<T> {
     reqwest::get(url)
-    .await
-    .with_context(|| format!("failed to connect to summitd at {} — is it running?", url))?
-    .json::<T>()
-    .await
-    .context("failed to parse response")
+        .await
+        .with_context(|| format!("failed to connect to summitd at {} — is it running?", url))?
+        .json::<T>()
+        .await
+        .context("failed to parse response")
 }
 
 async fn post_json<T: for<'de> Deserialize<'de>>(url: &str) -> Result<T> {
     reqwest::Client::new()
-    .post(url)
-    .send()
-    .await
-    .with_context(|| format!("failed to connect to summitd at {} — is it running?", url))?
-    .json::<T>()
-    .await
-    .context("failed to parse response")
+        .post(url)
+        .send()
+        .await
+        .with_context(|| format!("failed to connect to summitd at {} — is it running?", url))?
+        .json::<T>()
+        .await
+        .context("failed to parse response")
 }
 
 async fn post_json_body<T, R>(url: &str, body: &T) -> Result<R>
 where
-T: Serialize,
-R: for<'de> Deserialize<'de>,
+    T: Serialize,
+    R: for<'de> Deserialize<'de>,
 {
     reqwest::Client::new()
-    .post(url)
-    .json(body)
-    .send()
-    .await
-    .with_context(|| format!("failed to connect to summitd at {} — is it running?", url))?
-    .json::<R>()
-    .await
-    .context("failed to parse response")
+        .post(url)
+        .json(body)
+        .send()
+        .await
+        .with_context(|| format!("failed to connect to summitd at {} — is it running?", url))?
+        .json::<R>()
+        .await
+        .context("failed to parse response")
 }
 
 // ── Subcommand handlers ───────────────────────────────────────────────────────
@@ -206,7 +206,7 @@ async fn cmd_peers(port: u16) -> Result<()> {
             0x01 => "Realtime",
             0x02 => "Bulk",
             0x03 => "Background",
-            _    => "Unknown",
+            _ => "Unknown",
         };
 
         let trust_icon = match p.trust_level.as_str() {
@@ -236,7 +236,11 @@ async fn cmd_cache(port: u16) -> Result<()> {
     println!("  Cache Stats");
     println!("═══════════════════════════════════════");
     println!("  Chunks : {}", resp.chunks);
-    println!("  Bytes  : {} ({:.1} KB)", resp.bytes, resp.bytes as f64 / 1024.0);
+    println!(
+        "  Bytes  : {} ({:.1} KB)",
+        resp.bytes,
+        resp.bytes as f64 / 1024.0
+    );
 
     Ok(())
 }
@@ -247,20 +251,24 @@ async fn cmd_cache_clear(port: u16) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_send(port: u16, path: &str, target_peer: Option<&str>, target_session: Option<&str>) -> Result<()> {
+async fn cmd_send(
+    port: u16,
+    path: &str,
+    target_peer: Option<&str>,
+    target_session: Option<&str>,
+) -> Result<()> {
     use reqwest::multipart;
 
-    let file_data = std::fs::read(path)
-    .with_context(|| format!("failed to read file: {}", path))?;
+    let file_data =
+        std::fs::read(path).with_context(|| format!("failed to read file: {}", path))?;
 
     let filename = std::path::Path::new(path)
-    .file_name()
-    .and_then(|n| n.to_str())
-    .unwrap_or("file")
-    .to_string();
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("file")
+        .to_string();
 
-    let part = multipart::Part::bytes(file_data)
-    .file_name(filename.clone());
+    let part = multipart::Part::bytes(file_data).file_name(filename.clone());
 
     // Build target JSON
     let target_json = if let Some(peer) = target_peer {
@@ -279,23 +287,23 @@ async fn cmd_send(port: u16, path: &str, target_peer: Option<&str>, target_sessi
         })
     };
 
-    let target_part = multipart::Part::text(target_json.to_string())
-    .mime_str("application/json")?;
+    let target_part =
+        multipart::Part::text(target_json.to_string()).mime_str("application/json")?;
 
     let form = multipart::Form::new()
-    .part("file", part)
-    .part("target", target_part);
+        .part("file", part)
+        .part("target", target_part);
 
     let client = reqwest::Client::new();
     let resp: SendResponse = client
-    .post(format!("{}/send", base_url(port)))
-    .multipart(form)
-    .send()
-    .await
-    .context("failed to send file to daemon")?
-    .json()
-    .await
-    .context("failed to parse send response")?;
+        .post(format!("{}/send", base_url(port)))
+        .multipart(form)
+        .send()
+        .await
+        .context("failed to send file to daemon")?
+        .json()
+        .await
+        .context("failed to parse send response")?;
 
     let target_desc = if target_peer.is_some() {
         "to peer"
@@ -372,10 +380,8 @@ async fn cmd_trust_add(port: u16, pubkey: &str) -> Result<()> {
         public_key: pubkey.to_string(),
     };
 
-    let resp: TrustAddResponse = post_json_body(
-        &format!("{}/trust/add", base_url(port)),
-                                                &req
-    ).await?;
+    let resp: TrustAddResponse =
+        post_json_body(&format!("{}/trust/add", base_url(port)), &req).await?;
 
     println!("✓ Peer trusted: {}...", &resp.public_key[..16]);
     if resp.flushed_chunks > 0 {
@@ -390,10 +396,8 @@ async fn cmd_trust_block(port: u16, pubkey: &str) -> Result<()> {
         public_key: pubkey.to_string(),
     };
 
-    let resp: TrustBlockResponse = post_json_body(
-        &format!("{}/trust/block", base_url(port)),
-                                                  &req
-    ).await?;
+    let resp: TrustBlockResponse =
+        post_json_body(&format!("{}/trust/block", base_url(port)), &req).await?;
 
     println!("✗ Peer blocked: {}...", &resp.public_key[..16]);
 
@@ -413,12 +417,16 @@ async fn cmd_trust_pending(port: u16) -> Result<()> {
     println!("═══════════════════════════════════════");
 
     for peer in &resp.peers {
-        println!("  ? {}... — {} chunks buffered",
-                 &peer.public_key[..16],
-                 peer.buffered_chunks);
+        println!(
+            "  ? {}... — {} chunks buffered",
+            &peer.public_key[..16],
+            peer.buffered_chunks
+        );
     }
 
-    println!("\nUse 'summit-ctl trust add <pubkey>' to trust a peer and process their buffered chunks.");
+    println!(
+        "\nUse 'summit-ctl trust add <pubkey>' to trust a peer and process their buffered chunks."
+    );
 
     Ok(())
 }
@@ -444,13 +452,13 @@ async fn cmd_session_drop(port: u16, session_id: &str) -> Result<()> {
     }
 
     let resp: DropResponse = reqwest::Client::new()
-    .delete(format!("{}/sessions/{}", base_url(port), session_id))
-    .send()
-    .await
-    .context("failed to drop session")?
-    .json()
-    .await
-    .context("failed to parse response")?;
+        .delete(format!("{}/sessions/{}", base_url(port), session_id))
+        .send()
+        .await
+        .context("failed to drop session")?
+        .json()
+        .await
+        .context("failed to parse response")?;
 
     if resp.dropped {
         println!("✓ Session dropped: {}...", &resp.session_id[..16]);
@@ -473,7 +481,8 @@ async fn cmd_session_inspect(port: u16, session_id: &str) -> Result<()> {
         trust_level: String,
     }
 
-    let resp: InspectResponse = get_json(&format!("{}/sessions/{}", base_url(port), session_id)).await?;
+    let resp: InspectResponse =
+        get_json(&format!("{}/sessions/{}", base_url(port), session_id)).await?;
 
     println!("═══════════════════════════════════════");
     println!("  Session Details");
@@ -536,7 +545,10 @@ fn print_usage() {
     println!("  trust pending       List untrusted peers with buffered chunks");
     println!();
     println!("Options:");
-    println!("  --port <port>       Status endpoint port (default: {})", DEFAULT_PORT);
+    println!(
+        "  --port <port>       Status endpoint port (default: {})",
+        DEFAULT_PORT
+    );
     println!();
     println!("Examples:");
     println!("  summit-ctl status");
@@ -563,10 +575,11 @@ async fn main() -> Result<()> {
     while i < args.len() {
         if args[i] == "--port" {
             i += 1;
-            port = args.get(i)
-            .context("--port requires a value")?
-            .parse()
-            .context("--port must be a number")?;
+            port = args
+                .get(i)
+                .context("--port requires a value")?
+                .parse()
+                .context("--port must be a number")?;
         } else {
             remaining.push(args[i].clone());
         }
@@ -604,20 +617,23 @@ async fn main() -> Result<()> {
     }
 
     match remaining_refs.as_slice() {
-        ["shutdown"]                          => cmd_shutdown(port).await,
-        ["sessions", "drop", id]              => cmd_session_drop(port, id).await,
-        ["sessions", "inspect", id]           => cmd_session_inspect(port, id).await,
-        ["schema", "list"] | ["schema"]       => cmd_schema_list(port).await,
-        ["status"] | []                       => cmd_status(port).await,
-        ["peers"]                             => cmd_peers(port).await,
-        ["cache"]                             => cmd_cache(port).await,
-        ["cache", "clear"]                    => cmd_cache_clear(port).await,
-        ["files"]                             => cmd_files(port).await,
-        ["trust", "list"] | ["trust"]         => cmd_trust_list(port).await,
-        ["trust", "add", pubkey]              => cmd_trust_add(port, pubkey).await,
-        ["trust", "block", pubkey]            => cmd_trust_block(port, pubkey).await,
-        ["trust", "pending"]                  => cmd_trust_pending(port).await,
-        ["help"] | ["--help"] | ["-h"]        => { print_usage(); Ok(()) }
+        ["shutdown"] => cmd_shutdown(port).await,
+        ["sessions", "drop", id] => cmd_session_drop(port, id).await,
+        ["sessions", "inspect", id] => cmd_session_inspect(port, id).await,
+        ["schema", "list"] | ["schema"] => cmd_schema_list(port).await,
+        ["status"] | [] => cmd_status(port).await,
+        ["peers"] => cmd_peers(port).await,
+        ["cache"] => cmd_cache(port).await,
+        ["cache", "clear"] => cmd_cache_clear(port).await,
+        ["files"] => cmd_files(port).await,
+        ["trust", "list"] | ["trust"] => cmd_trust_list(port).await,
+        ["trust", "add", pubkey] => cmd_trust_add(port, pubkey).await,
+        ["trust", "block", pubkey] => cmd_trust_block(port, pubkey).await,
+        ["trust", "pending"] => cmd_trust_pending(port).await,
+        ["help"] | ["--help"] | ["-h"] => {
+            print_usage();
+            Ok(())
+        }
         other => {
             eprintln!("Unknown command: {}", other.join(" "));
             eprintln!();

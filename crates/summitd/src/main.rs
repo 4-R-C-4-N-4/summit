@@ -15,32 +15,34 @@ mod cache;
 mod capability;
 mod chunk;
 mod delivery;
-mod schema;
-mod session;
+mod message_store;
 mod qos;
+mod schema;
+mod send_target;
+mod session;
 mod status;
 mod transfer;
 mod trust;
-mod send_target;
-mod message_store;
 
-use message_store::MessageStore;
-use trust::{TrustRegistry, TrustLevel, UntrustedBuffer};
-use send_target::SendTarget;
-use status::StatusState;
 use cache::ChunkCache;
 use capability::{broadcast, listener, new_registry};
+use message_store::MessageStore;
+use send_target::SendTarget;
 use session::{new_session_table, ActiveSession, SessionMeta};
+use status::StatusState;
 use tokio::sync::mpsc;
 use transfer::FileReassembler;
+use trust::{TrustLevel, TrustRegistry, UntrustedBuffer};
 
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
-    .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-    .init();
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
 
-    let interface = std::env::args().nth(1).unwrap_or_else(|| "veth-a".to_string());
+    let interface = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "veth-a".to_string());
     tracing::info!(interface, "summitd starting");
 
     let interface_index = broadcast::if_index(&interface)?;
@@ -48,12 +50,7 @@ async fn main() -> Result<()> {
     // Get our link-local address
     let local_link_addr: Ipv6Addr = {
         let probe = std::net::UdpSocket::bind("[::]:0")?;
-        let dest = std::net::SocketAddrV6::new(
-            "ff02::1".parse()?,
-                                               9000,
-                                               0,
-                                               interface_index,
-        );
+        let dest = std::net::SocketAddrV6::new("ff02::1".parse()?, 9000, 0, interface_index);
         probe.connect(dest)?;
         match probe.local_addr()? {
             std::net::SocketAddr::V6(v6) => *v6.ip(),
@@ -63,9 +60,10 @@ async fn main() -> Result<()> {
     tracing::info!(addr = %local_link_addr, "local link-local address");
 
     // Bind session socket to our link-local address so responses come back correctly
-    let session_listen_socket = UdpSocket::bind(
-        SocketAddrV6::new(local_link_addr, 0, 0, interface_index)
-    ).await.context("failed to bind session listen socket")?;
+    let session_listen_socket =
+        UdpSocket::bind(SocketAddrV6::new(local_link_addr, 0, 0, interface_index))
+            .await
+            .context("failed to bind session listen socket")?;
 
     // Generate a fresh keypair for this run
     let keypair = Arc::new(Keypair::generate());
@@ -83,8 +81,8 @@ async fn main() -> Result<()> {
     // };
     //
     // let capabilities = Arc::new(vec![test_capability.clone()]);
-    let registry  = new_registry();
-    let sessions  = new_session_table();
+    let registry = new_registry();
+    let sessions = new_session_table();
 
     let message_store = MessageStore::new();
 
@@ -101,7 +99,7 @@ async fn main() -> Result<()> {
 
     // Create cache (use /tmp for testing, /var/cache/summit for production)
     let cache_root = std::env::var("SUMMIT_CACHE")
-    .unwrap_or_else(|_| format!("/tmp/summit-cache-{}", std::process::id()));
+        .unwrap_or_else(|_| format!("/tmp/summit-cache-{}", std::process::id()));
     let cache = ChunkCache::new(&cache_root)?;
     tracing::info!(root = %cache_root, "chunk cache initialized");
 
@@ -111,10 +109,12 @@ async fn main() -> Result<()> {
 
         tokio::spawn(async move {
             if let Err(e) = capability::broadcast::broadcast_loop(
-                keypair,              // Arc<Keypair>
+                keypair, // Arc<Keypair>
                 interface_index,
                 session_listen_port,
-            ).await {
+            )
+            .await
+            {
                 tracing::error!(error = %e, "capability broadcast failed");
             }
         })
@@ -126,21 +126,14 @@ async fn main() -> Result<()> {
         keypair.public,
     ));
 
-    let expiry_task = tokio::spawn(listener::expiry_loop(
-        registry.clone(),
-    ));
+    let expiry_task = tokio::spawn(listener::expiry_loop(registry.clone()));
 
     // Get our link-local address by examining the socket's local address
     // Connect to peer's address to determine which local address we use
     let local_link_addr: Ipv6Addr = {
         let probe = std::net::UdpSocket::bind("[::]:0")?;
         // Bind to the multicast group on our interface using scope_id
-        let dest = std::net::SocketAddrV6::new(
-            "ff02::1".parse()?,
-            9000,
-            0,
-            interface_index,
-        );
+        let dest = std::net::SocketAddrV6::new("ff02::1".parse()?, 9000, 0, interface_index);
         probe.connect(dest)?;
         match probe.local_addr()? {
             std::net::SocketAddr::V6(v6) => *v6.ip(),
@@ -149,19 +142,19 @@ async fn main() -> Result<()> {
     };
     tracing::info!(addr = %local_link_addr, "local link-local address");
     let session_listener = {
-        let socket              = session_listen_socket.clone();
-        let keypair             = keypair.clone();
-        let sessions            = sessions.clone();
-        let tracker             = handshake_tracker.clone();
-        let local_addr          = local_link_addr;
+        let socket = session_listen_socket.clone();
+        let keypair = keypair.clone();
+        let sessions = sessions.clone();
+        let tracker = handshake_tracker.clone();
+        let local_addr = local_link_addr;
         let registry_ref = registry.clone();
 
         tokio::spawn(async move {
-            use zerocopy::FromBytes;
             use summit_core::crypto::NoiseResponder;
-            use summit_core::wire::{HandshakeInit, HandshakeResponse, HandshakeComplete};
+            use summit_core::wire::{HandshakeComplete, HandshakeInit, HandshakeResponse};
+            use zerocopy::FromBytes;
 
-            const HANDSHAKE_INIT_SIZE: usize     = std::mem::size_of::<HandshakeInit>();
+            const HANDSHAKE_INIT_SIZE: usize = std::mem::size_of::<HandshakeInit>();
             const HANDSHAKE_RESPONSE_SIZE: usize = std::mem::size_of::<HandshakeResponse>();
             const HANDSHAKE_COMPLETE_SIZE: usize = std::mem::size_of::<HandshakeComplete>();
 
@@ -449,9 +442,9 @@ async fn main() -> Result<()> {
 
     let session_initiator = {
         let socket = session_listen_socket.clone();
-        let keypair  = keypair.clone();
+        let keypair = keypair.clone();
         let registry = registry.clone();
-        let tracker  = handshake_tracker.clone();
+        let tracker = handshake_tracker.clone();
 
         tokio::spawn(async move {
             use summit_core::crypto::NoiseInitiator;
@@ -476,15 +469,15 @@ async fn main() -> Result<()> {
                     if keypair.public >= entry.public_key {
                         tracing::debug!(
                             our_key = hex::encode(&keypair.public[..4]),
-                                        peer_key = hex::encode(&entry.public_key[..4]),
-                                        "peer has lower key, waiting"
+                            peer_key = hex::encode(&entry.public_key[..4]),
+                            "peer has lower key, waiting"
                         );
                         continue;
                     }
                     tracing::debug!(
                         our_key = hex::encode(&keypair.public[..4]),
-                                    peer_key = hex::encode(&entry.public_key[..4]),
-                                    "we have lower key, initiating"
+                        peer_key = hex::encode(&entry.public_key[..4]),
+                        "we have lower key, initiating"
                     );
 
                     // Only mark attempted if we're actually initiating
@@ -502,27 +495,27 @@ async fn main() -> Result<()> {
                     // Create chunk socket
                     let chunk_socket = match UdpSocket::bind("[::]:0").await {
                         Ok(s) => Arc::new(s),
-                     Err(e) => {
-                         tracing::warn!(error = %e, "failed to bind chunk socket");
-                         continue;
-                     }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "failed to bind chunk socket");
+                            continue;
+                        }
                     };
 
                     let local_chunk_port = match chunk_socket.local_addr() {
                         Ok(addr) => addr.port(),
-                     Err(e) => {
-                         tracing::warn!(error = %e, "failed to get chunk socket addr");
-                         continue;
-                     }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "failed to get chunk socket addr");
+                            continue;
+                        }
                     };
 
                     // Create noise initiator
                     let (noise, msg1) = match NoiseInitiator::new(&keypair) {
                         Ok(r) => r,
-                     Err(e) => {
-                         tracing::warn!(error = %e, "failed to create noise initiator");
-                         continue;
-                     }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "failed to create noise initiator");
+                            continue;
+                        }
                     };
 
                     // Build HandshakeInit
@@ -530,10 +523,10 @@ async fn main() -> Result<()> {
                         capability_hash: summit_core::crypto::hash(b"summit.test"),
                         noise_msg: match msg1.try_into() {
                             Ok(m) => m,
-                     Err(_) => {
-                         tracing::warn!("msg1 wrong size");
-                         continue;
-                     }
+                            Err(_) => {
+                                tracing::warn!("msg1 wrong size");
+                                continue;
+                            }
                         },
                         nonce: *noise.nonce(),
                     };
@@ -544,7 +537,6 @@ async fn main() -> Result<()> {
                         continue;
                     }
 
-
                     let peer_ip = entry.addr;
                     // Track this initiated handshake
                     tracker.lock().await.add_initiator(
@@ -552,7 +544,7 @@ async fn main() -> Result<()> {
                         peer_pubkey,
                         noise,
                         chunk_socket,
-                        local_chunk_port
+                        local_chunk_port,
                     );
                 }
             }
@@ -581,9 +573,9 @@ async fn main() -> Result<()> {
     let delivery_tracker = delivery::DeliveryTracker::new();
 
     // File reassembler - watches incoming chunks, detects file metadata, reassembles
-    let reassembler = Arc::new(FileReassembler::new(
-        std::path::PathBuf::from("/tmp/summit-received")
-    ));
+    let reassembler = Arc::new(FileReassembler::new(std::path::PathBuf::from(
+        "/tmp/summit-received",
+    )));
 
     // Trust registry and untrusted chunk buffer
     let trust_registry = TrustRegistry::new();
@@ -612,7 +604,10 @@ async fn main() -> Result<()> {
                     let session_id = *entry.key();
                     if seen_sessions.insert(session_id) {
                         let active = entry.value();
-                        tracing::info!(session_id = hex::encode(session_id), "spawning chunk tasks for session");
+                        tracing::info!(
+                            session_id = hex::encode(session_id),
+                            "spawning chunk tasks for session"
+                        );
 
                         let peer_addr = active.meta.peer_addr;
                         let crypto = active.crypto.clone();
@@ -624,7 +619,8 @@ async fn main() -> Result<()> {
                         let message_store = message_store_ref.clone();
 
                         // Create channel for received chunks
-                        let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::channel::<chunk::IncomingChunk>(100);
+                        let (chunk_tx, mut chunk_rx) =
+                            tokio::sync::mpsc::channel::<chunk::IncomingChunk>(100);
 
                         // Spawn receiver handler (processes chunks, feeds reassembler)
                         tokio::spawn(async move {
@@ -634,15 +630,15 @@ async fn main() -> Result<()> {
                                     TrustLevel::Blocked => {
                                         tracing::debug!(
                                             peer = hex::encode(peer_pubkey),
-                                                        "chunk from blocked peer, dropping"
+                                            "chunk from blocked peer, dropping"
                                         );
                                         continue;
                                     }
                                     TrustLevel::Untrusted => {
                                         tracing::info!(
                                             peer = hex::encode(&peer_pubkey[..8]),
-                                                       content_hash = hex::encode(&chunk.content_hash[..8]),
-                                                       "chunk from untrusted peer, buffering"
+                                            content_hash = hex::encode(&chunk.content_hash[..8]),
+                                            "chunk from untrusted peer, buffering"
                                         );
                                         buffer.add(peer_pubkey, chunk.content_hash, chunk.payload);
                                         continue;
@@ -654,9 +650,9 @@ async fn main() -> Result<()> {
 
                                 tracing::info!(
                                     content_hash = hex::encode(chunk.content_hash),
-                                               type_tag = chunk.type_tag,
-                                               payload_len = chunk.payload.len(),
-                                               "chunk received"
+                                    type_tag = chunk.type_tag,
+                                    payload_len = chunk.payload.len(),
+                                    "chunk received"
                                 );
 
                                 if chunk.type_tag == 4 {
@@ -681,7 +677,11 @@ async fn main() -> Result<()> {
 
                                 // Handle file metadata chunks (type_tag 3)
                                 if chunk.type_tag == 3 {
-                                    if let Ok(metadata) = serde_json::from_slice::<transfer::FileMetadata>(&chunk.payload) {
+                                    if let Ok(metadata) =
+                                        serde_json::from_slice::<transfer::FileMetadata>(
+                                            &chunk.payload,
+                                        )
+                                    {
                                         tracing::info!(filename = %metadata.filename, chunks = metadata.chunk_hashes.len(), "file transfer started");
                                         reassembler.add_metadata(metadata).await;
                                     }
@@ -689,7 +689,10 @@ async fn main() -> Result<()> {
 
                                 // Handle file data chunks (type_tag 2)
                                 if chunk.type_tag == 2 {
-                                    if let Ok(Some(path)) = reassembler.add_chunk(chunk.content_hash, chunk.payload).await {
+                                    if let Ok(Some(path)) = reassembler
+                                        .add_chunk(chunk.content_hash, chunk.payload)
+                                        .await
+                                    {
                                         tracing::info!(path = %path.display(), "file completed");
                                     }
                                 }
@@ -711,7 +714,9 @@ async fn main() -> Result<()> {
                                 recv_cache,
                                 recv_tracker,
                                 peer_addr_str,
-                            ).await {
+                            )
+                            .await
+                            {
                                 tracing::warn!(error = %e, "receive loop terminated");
                             }
                         });
@@ -736,17 +741,21 @@ async fn main() -> Result<()> {
                 let target_sessions: Vec<[u8; 32]> = match &target {
                     SendTarget::Broadcast => {
                         // Collect session IDs of trusted peers
-                        sessions.iter()
-                        .filter(|e| trust.check(&e.value().meta.peer_pubkey) == TrustLevel::Trusted)
-                        .map(|e| *e.key())
-                        .collect()
+                        sessions
+                            .iter()
+                            .filter(|e| {
+                                trust.check(&e.value().meta.peer_pubkey) == TrustLevel::Trusted
+                            })
+                            .map(|e| *e.key())
+                            .collect()
                     }
                     SendTarget::Peer { public_key } => {
                         // Find session ID for this peer
-                        sessions.iter()
-                        .find(|e| e.value().meta.peer_pubkey == *public_key)
-                        .map(|e| vec![*e.key()])
-                        .unwrap_or_default()
+                        sessions
+                            .iter()
+                            .find(|e| e.value().meta.peer_pubkey == *public_key)
+                            .map(|e| vec![*e.key()])
+                            .unwrap_or_default()
                     }
                     SendTarget::Session { session_id } => {
                         // Direct session send
@@ -764,17 +773,18 @@ async fn main() -> Result<()> {
                 }
 
                 // Priority check
-                let has_realtime = sessions.iter()
-                .any(|e| matches!(e.value().meta.contract, Contract::Realtime));
+                let has_realtime = sessions
+                    .iter()
+                    .any(|e| matches!(e.value().meta.contract, Contract::Realtime));
 
                 let mut send_tasks = Vec::new();
-
 
                 for session_id in target_sessions {
                     let session = match sessions.get(&session_id) {
                         Some(s) => s,
-                     None => continue,
-                    };                    let peer_addr = session.meta.peer_addr;
+                        None => continue,
+                    };
+                    let peer_addr = session.meta.peer_addr;
                     let chunk_port = session.meta.chunk_port;
                     let socket = session.value().socket.clone();
                     let crypto = session.value().crypto.clone();
@@ -812,7 +822,8 @@ async fn main() -> Result<()> {
                             crypto,
                             chunk_clone,
                             cache_clone,
-                        ).await
+                        )
+                        .await
                     });
                     send_tasks.push(task);
                 }
@@ -842,13 +853,13 @@ async fn main() -> Result<()> {
     let status_server = {
         let state = StatusState {
             sessions: sessions.clone(),
-            cache:    cache.clone(),
+            cache: cache.clone(),
             registry: registry.clone(),
-            chunk_tx:    chunk_tx.clone(),
+            chunk_tx: chunk_tx.clone(),
             reassembler: reassembler.clone(),
-            trust:            trust_registry.clone(),
+            trust: trust_registry.clone(),
             untrusted_buffer: untrusted_buffer.clone(),
-            message_store:    message_store.clone(),
+            message_store: message_store.clone(),
         };
         tokio::spawn(async move {
             if let Err(e) = status::serve(state, status_port).await {

@@ -15,8 +15,8 @@ pub type SharedTracker = Arc<Mutex<HandshakeTracker>>;
 
 /// Tracks in-progress handshakes from multiple peers.
 pub struct HandshakeTracker {
-    initiators:         HashMap<Ipv6Addr, InitiatorState>,
-    responders:         HashMap<Ipv6Addr, ResponderState>,
+    initiators: HashMap<Ipv6Addr, InitiatorState>,
+    responders: HashMap<Ipv6Addr, ResponderState>,
     initiators_waiting: HashMap<Ipv6Addr, InitiatorWaiting>,
     responders_waiting: HashMap<Ipv6Addr, ResponderWaiting>,
 }
@@ -73,13 +73,16 @@ impl HandshakeTracker {
         chunk_socket: Arc<UdpSocket>,
         chunk_port: u16,
     ) {
-        self.initiators.insert(peer_ip, InitiatorState {
-            noise,
-            started_at: Instant::now(),
-            chunk_socket,
-            chunk_socket_port: chunk_port,
-            peer_pubkey,
-        });
+        self.initiators.insert(
+            peer_ip,
+            InitiatorState {
+                noise,
+                started_at: Instant::now(),
+                chunk_socket,
+                chunk_socket_port: chunk_port,
+                peer_pubkey,
+            },
+        );
     }
 
     pub fn add_responder(
@@ -90,13 +93,16 @@ impl HandshakeTracker {
         chunk_port: u16,
         chunk_socket: Arc<UdpSocket>,
     ) {
-        self.responders.insert(peer_ip, ResponderState {
-            pending,
-            started_at: Instant::now(),
-            chunk_socket,
-            chunk_socket_port: chunk_port,
-            peer_pubkey,
-        });
+        self.responders.insert(
+            peer_ip,
+            ResponderState {
+                pending,
+                started_at: Instant::now(),
+                chunk_socket,
+                chunk_socket_port: chunk_port,
+                peer_pubkey,
+            },
+        );
     }
 
     pub fn add_initiator_waiting_chunk(
@@ -107,12 +113,15 @@ impl HandshakeTracker {
         chunk_port: u16,
         peer_pubkey: [u8; 32],
     ) {
-        self.initiators_waiting.insert(peer_ip, InitiatorWaiting {
-            session,
-            chunk_socket,
-            chunk_socket_port: chunk_port,
-            peer_pubkey,
-        });
+        self.initiators_waiting.insert(
+            peer_ip,
+            InitiatorWaiting {
+                session,
+                chunk_socket,
+                chunk_socket_port: chunk_port,
+                peer_pubkey,
+            },
+        );
     }
 
     pub fn add_responder_waiting_chunk(
@@ -123,12 +132,15 @@ impl HandshakeTracker {
         local_chunk_port: u16,
         peer_pubkey: [u8; 32],
     ) {
-        self.responders_waiting.insert(peer_ip, ResponderWaiting {
-            session,
-            chunk_socket,
-            local_chunk_port,
-            peer_pubkey,
-        });
+        self.responders_waiting.insert(
+            peer_ip,
+            ResponderWaiting {
+                session,
+                chunk_socket,
+                local_chunk_port,
+                peer_pubkey,
+            },
+        );
     }
 
     pub fn remove_initiator(&mut self, peer_ip: &Ipv6Addr) -> Option<InitiatorState> {

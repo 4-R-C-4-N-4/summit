@@ -16,18 +16,20 @@ use crate::schema::KnownSchema;
 use super::IncomingChunk;
 
 pub async fn receive_loop(
-    socket:    Arc<UdpSocket>,
-    session:   Arc<Mutex<Session>>,
-    chunk_tx:  mpsc::Sender<IncomingChunk>,
-    cache:     ChunkCache,
-    tracker:   DeliveryTracker,  // NEW
-    peer_addr: String,            // NEW
+    socket: Arc<UdpSocket>,
+    session: Arc<Mutex<Session>>,
+    chunk_tx: mpsc::Sender<IncomingChunk>,
+    cache: ChunkCache,
+    tracker: DeliveryTracker, // NEW
+    peer_addr: String,        // NEW
 ) -> Result<()> {
     let mut buf = vec![0u8; 65536 + 1024];
 
     loop {
-        let (len, _peer) = socket.recv_from(&mut buf).await
-        .context("recv_from failed")?;
+        let (len, _peer) = socket
+            .recv_from(&mut buf)
+            .await
+            .context("recv_from failed")?;
 
         let mut plaintext = Vec::new();
         {
@@ -74,7 +76,7 @@ pub async fn receive_loop(
         } else {
             tracing::trace!(
                 schema_id = hex::encode(header.schema_id),
-                            "unknown schema, skipping validation"
+                "unknown schema, skipping validation"
             );
         }
 
@@ -89,8 +91,8 @@ pub async fn receive_loop(
 
         let incoming = IncomingChunk {
             content_hash: header.content_hash,
-            type_tag:     header.type_tag,
-            schema_id:    header.schema_id,
+            type_tag: header.type_tag,
+            schema_id: header.schema_id,
             payload,
         };
 
@@ -112,8 +114,8 @@ pub async fn receive_loop(
         } else {
             tracing::debug!(
                 content_hash = hex::encode(incoming.content_hash),
-                            delivery_count,
-                            "duplicate chunk via multipath, deduplicating"
+                delivery_count,
+                "duplicate chunk via multipath, deduplicating"
             );
         }
     }

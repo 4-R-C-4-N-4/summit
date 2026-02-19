@@ -8,14 +8,14 @@ use serde::{Deserialize, Serialize};
 pub enum SendTarget {
     /// Broadcast to all trusted sessions.
     Broadcast,
-    
+
     /// Send to specific peer by public key.
     #[serde(rename = "peer")]
     Peer {
         #[serde(with = "hex_serde")]
         public_key: [u8; 32],
     },
-    
+
     /// Send to specific session by session ID.
     #[serde(rename = "session")]
     Session {
@@ -32,14 +32,14 @@ impl Default for SendTarget {
 
 mod hex_serde {
     use serde::{Deserialize, Deserializer, Serializer};
-    
+
     pub fn serialize<S>(bytes: &[u8; 32], serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
         serializer.serialize_str(&hex::encode(bytes))
     }
-    
+
     pub fn deserialize<'de, D>(deserializer: D) -> Result<[u8; 32], D::Error>
     where
         D: Deserializer<'de>,

@@ -22,9 +22,9 @@ use summit_core::wire::{CapabilityAnnouncement, Contract, MULTICAST_ADDR};
 /// * `capabilities` - The announcements to broadcast. All are sent each interval.
 /// * `interface_index` - The OS interface index to bind to (from `if_nametoindex`).
 pub async fn broadcast_loop(
-    keypair:         Arc<Keypair>,
+    keypair: Arc<Keypair>,
     interface_index: u32,
-    session_port:    u16,
+    session_port: u16,
 ) -> Result<()> {
     let socket = make_multicast_socket(interface_index)
         .context("failed to create multicast broadcast socket")?;
@@ -32,11 +32,9 @@ pub async fn broadcast_loop(
     let interval_secs = 2;
     let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
 
-
     let multicast: Ipv6Addr = MULTICAST_ADDR.parse().unwrap();
     // Port 0 on the destination — recipients bind to a known port in listener.rs
     let dest = SocketAddrV6::new(multicast, 9000, 0, interface_index);
-
 
     tracing::info!(
         interface_index,
@@ -51,12 +49,12 @@ pub async fn broadcast_loop(
         // Build announcement with ACTUAL ports
         let announcement = CapabilityAnnouncement {
             capability_hash: summit_core::crypto::hash(b"summit.test"),
-            public_key:      keypair.public,
-                version:         1,
-                session_port,    // use actual port
-                chunk_port:      0,
-                contract:        Contract::Bulk as u8,
-                flags:           0,
+            public_key: keypair.public,
+            version: 1,
+            session_port, // use actual port
+            chunk_port: 0,
+            contract: Contract::Bulk as u8,
+            flags: 0,
         };
         let bytes = announcement.as_bytes();
 
@@ -70,13 +68,16 @@ pub async fn broadcast_loop(
 
 /// Create a UDP socket suitable for sending IPv6 multicast.
 fn make_multicast_socket(interface_index: u32) -> Result<socket2::Socket> {
-    let socket = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP))
-        .context("socket()")?;
+    let socket = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP)).context("socket()")?;
 
     socket.set_reuse_address(true).context("SO_REUSEADDR")?;
-    socket.set_multicast_if_v6(interface_index).context("IPV6_MULTICAST_IF")?;
+    socket
+        .set_multicast_if_v6(interface_index)
+        .context("IPV6_MULTICAST_IF")?;
     // TTL 1 — link-local only, do not route beyond this link
-    socket.set_multicast_hops_v6(1).context("IPV6_MULTICAST_HOPS")?;
+    socket
+        .set_multicast_hops_v6(1)
+        .context("IPV6_MULTICAST_HOPS")?;
 
     Ok(socket)
 }

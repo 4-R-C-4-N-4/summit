@@ -12,9 +12,7 @@ use socket2::{Domain, Protocol, Socket, Type};
 use tokio::net::UdpSocket;
 use zerocopy::FromBytes;
 
-use summit_core::wire::{
-    CapabilityAnnouncement, MULTICAST_ADDR, PEER_TTL_SECS,
-};
+use summit_core::wire::{CapabilityAnnouncement, MULTICAST_ADDR, PEER_TTL_SECS};
 
 use super::{PeerEntry, PeerRegistry};
 
@@ -30,11 +28,11 @@ pub async fn listener_loop(
     local_public_key: [u8; 32],
 ) -> Result<()> {
     let socket = make_listener_socket(interface_index)
-    .context("failed to create multicast listener socket")?;
+        .context("failed to create multicast listener socket")?;
 
     // Convert to tokio UdpSocket for async recv
-    let socket = UdpSocket::from_std(socket.into())
-    .context("failed to convert to tokio UdpSocket")?;
+    let socket =
+        UdpSocket::from_std(socket.into()).context("failed to convert to tokio UdpSocket")?;
 
     let mut buf = vec![0u8; 1024];
 
@@ -68,7 +66,7 @@ pub async fn listener_loop(
                 }
 
                 let cap_hash = announcement.capability_hash;
-                let session_port = announcement.session_port;  // copy to avoid alignment issue
+                let session_port = announcement.session_port; // copy to avoid alignment issue
 
                 tracing::debug!(
                     capability = hex::encode(&cap_hash),
@@ -77,15 +75,18 @@ pub async fn listener_loop(
                                 "peer discovered"
                 );
 
-                registry.insert(announcement.public_key, PeerEntry {
-                    addr:         sender_addr,
-                    public_key:   announcement.public_key,
-                    session_port: announcement.session_port,
-                    chunk_port:   announcement.chunk_port,
-                    version:      announcement.version,
-                    contract:     announcement.contract,
-                    last_seen:    Instant::now(),
-                });
+                registry.insert(
+                    announcement.public_key,
+                    PeerEntry {
+                        addr: sender_addr,
+                        public_key: announcement.public_key,
+                        session_port: announcement.session_port,
+                        chunk_port: announcement.chunk_port,
+                        version: announcement.version,
+                        contract: announcement.contract,
+                        last_seen: Instant::now(),
+                    },
+                );
             }
             None => {
                 tracing::trace!("failed to parse capability announcement");
@@ -117,8 +118,7 @@ pub async fn expiry_loop(registry: PeerRegistry) -> Result<()> {
 
 /// Create a UDP socket joined to the ff02::1 multicast group.
 fn make_listener_socket(interface_index: u32) -> Result<std::net::UdpSocket> {
-    let socket = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP))
-    .context("socket()")?;
+    let socket = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP)).context("socket()")?;
 
     socket.set_reuse_address(true).context("SO_REUSEADDR")?;
     socket.set_only_v6(true).context("IPV6_V6ONLY")?;
@@ -129,8 +129,8 @@ fn make_listener_socket(interface_index: u32) -> Result<std::net::UdpSocket> {
 
     let multicast: Ipv6Addr = MULTICAST_ADDR.parse().unwrap();
     socket
-    .join_multicast_v6(&multicast, interface_index)
-    .context("IPV6_JOIN_GROUP")?;
+        .join_multicast_v6(&multicast, interface_index)
+        .context("IPV6_JOIN_GROUP")?;
 
     Ok(socket.into())
 }

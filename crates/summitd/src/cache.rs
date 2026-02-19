@@ -52,8 +52,7 @@ impl ChunkCache {
 
         // Safety: file is opened read-only and we don't mutate the mmap
         let mmap = unsafe {
-            Mmap::map(&file)
-                .with_context(|| format!("failed to mmap chunk: {}", path.display()))?
+            Mmap::map(&file).with_context(|| format!("failed to mmap chunk: {}", path.display()))?
         };
 
         // Copy mmap into Bytes — this is still zero-copy in the sense that
@@ -88,12 +87,16 @@ impl ChunkCache {
                 .with_context(|| format!("failed to create temp file: {}", tmp_path.display()))?;
             file.write_all(data)
                 .with_context(|| format!("failed to write chunk data"))?;
-            file.sync_all()
-                .context("failed to sync chunk to disk")?;
+            file.sync_all().context("failed to sync chunk to disk")?;
         }
 
-        fs::rename(&tmp_path, &path)
-            .with_context(|| format!("failed to rename {} to {}", tmp_path.display(), path.display()))?;
+        fs::rename(&tmp_path, &path).with_context(|| {
+            format!(
+                "failed to rename {} to {}",
+                tmp_path.display(),
+                path.display()
+            )
+        })?;
 
         tracing::trace!(hash = hex::encode(hash), "chunk cached");
         Ok(())

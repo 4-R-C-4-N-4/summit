@@ -1,15 +1,15 @@
 //! File transfer — chunking, reassembly, and metadata.
 
-use std::path::PathBuf;
-use std::collections::HashMap;
-use std::sync::Arc;
-use bytes::Bytes;
-use tokio::sync::Mutex;
 use anyhow::{Context, Result};
+use bytes::Bytes;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
-use summit_core::crypto::hash;
 use crate::chunk::OutgoingChunk;
 use crate::schema::KnownSchema;
+use summit_core::crypto::hash;
 
 /// Maximum chunk payload size (before encryption overhead)
 pub const MAX_CHUNK_SIZE: usize = 32 * 1024; // 32KB
@@ -24,43 +24,47 @@ pub struct FileMetadata {
 
 /// Chunk a file into multiple OutgoingChunks
 pub fn chunk_file(path: &std::path::Path) -> Result<Vec<OutgoingChunk>> {
-    let data = std::fs::read(path)
-        .with_context(|| format!("failed to read file: {}", path.display()))?;
-    
-    let filename = path.file_name()
+    let data =
+        std::fs::read(path).with_context(|| format!("failed to read file: {}", path.display()))?;
+
+    let filename = path
+        .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("unknown")
         .to_string();
-    
+
     let mut chunks = Vec::new();
     let mut chunk_hashes = Vec::new();
-    
+
     // Split file into data chunks
     for chunk_data in data.chunks(MAX_CHUNK_SIZE) {
         let content_hash = hash(chunk_data);
         chunk_hashes.push(content_hash);
-        
+
         chunks.push(OutgoingChunk {
-            type_tag: 2,  // File data chunk
+            type_tag: 2, // File data chunk
             schema_id: KnownSchema::FileData.id(),
             payload: Bytes::copy_from_slice(chunk_data),
         });
     }
-    
+
     // Create metadata chunk (goes first)
     let metadata = FileMetadata {
         filename,
         total_bytes: data.len() as u64,
         chunk_hashes: chunk_hashes.clone(),
     };
-    
+
     let metadata_bytes = serde_json::to_vec(&metadata)?;
-    chunks.insert(0, OutgoingChunk {
-        type_tag: 3,  // File metadata
-        schema_id: KnownSchema::FileMetadata.id(),
-        payload: Bytes::from(metadata_bytes),
-    });
-    
+    chunks.insert(
+        0,
+        OutgoingChunk {
+            type_tag: 3, // File metadata
+            schema_id: KnownSchema::FileMetadata.id(),
+            payload: Bytes::from(metadata_bytes),
+        },
+    );
+
     Ok(chunks)
 }
 
@@ -85,16 +89,19 @@ impl FileReassembler {
             output_dir,
         }
     }
-    
+
     /// Process a metadata chunk — start tracking this file
     pub async fn add_metadata(&self, metadata: FileMetadata) {
         let mut active = self.active.lock().await;
-        active.insert(metadata.filename.clone(), FileAssembly {
-            metadata,
-            chunks_received: HashMap::new(),
-        });
+        active.insert(
+            metadata.filename.clone(),
+            FileAssembly {
+                metadata,
+                chunks_received: HashMap::new(),
+            },
+        );
     }
-    
+
     /// Process a data chunk — add to file assembly
     pub async fn add_chunk(&self, content_hash: [u8; 32], data: Bytes) -> Result<Option<PathBuf>> {
         let mut active = self.active.lock().await;
@@ -140,7 +147,7 @@ impl FileReassembler {
         }
         Ok(None)
     }
-    
+
     /// List files currently being received
     pub async fn in_progress(&self) -> Vec<String> {
         self.active.lock().await.keys().cloned().collect()

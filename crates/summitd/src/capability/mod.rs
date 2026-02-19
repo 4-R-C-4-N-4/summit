@@ -25,7 +25,7 @@ pub struct PeerEntry {
     /// UDP port on which the peer accepts session handshake initiation.
     pub session_port: u16,
     /// Store chunk port
-    pub chunk_port:   u16,
+    pub chunk_port: u16,
     /// Capability version — prefer the highest seen for a given capability_hash.
     pub version: u32,
     /// Latency contract this capability operates under.
