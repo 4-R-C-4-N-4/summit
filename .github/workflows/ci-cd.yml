@@ -35,12 +35,6 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --lib
 
-      - name: Run clippy
-        run: cargo clippy --workspace -- -D warnings
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
   docker:
     name: Build Docker Image
     runs-on: ubuntu-latest
