@@ -7,7 +7,6 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.event.repository.name }}
 
 jobs:
   release-docker:
@@ -23,6 +22,16 @@ jobs:
         id: version
         run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
 
+      - name: Build image name
+        id: image
+        run: |
+          # GitHub Container Registry requires lowercase
+          REPO="${{ github.repository }}"
+          IMAGE_NAME=$(echo "${REPO}" | tr '[:upper:]' '[:lower:]')
+          echo "name=${REGISTRY}/${IMAGE_NAME}" >> $GITHUB_OUTPUT
+        env:
+          REGISTRY: ghcr.io
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -33,15 +42,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push multi-arch
+      - name: Build and push
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
           platforms: linux/amd64
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.VERSION }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            ${{ steps.image.outputs.name }}:${{ steps.version.outputs.VERSION }}
+            ${{ steps.image.outputs.name }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -58,11 +67,11 @@ jobs:
 
             ```bash
             # Pull image
-            docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.VERSION }}
+            docker pull ${{ steps.image.outputs.name }}:${{ steps.version.outputs.VERSION }}
 
             # Run Summit
             docker run -it --rm --privileged --network host \
-              ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.VERSION }}
+              ${{ steps.image.outputs.name }}:${{ steps.version.outputs.VERSION }}
 
             # Inside container
             summitd wlp5s0
@@ -70,51 +79,79 @@ jobs:
             # Access Web UI at http://127.0.0.1:9001
             ```
 
-            ### 📦 Installation Options
+            ### 📦 Docker Compose
 
-            **Docker Compose:**
             ```yaml
             services:
               summit:
-                image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.VERSION }}
+                image: ${{ steps.image.outputs.name }}:${{ steps.version.outputs.VERSION }}
                 privileged: true
                 network_mode: host
+                restart: unless-stopped
                 command: summitd wlp5s0
             ```
 
-            **Native Linux (see Assets below):**
-            - Download `summit-x86_64-unknown-linux-gnu.tar.gz` for Intel/AMD
-            - Download `summit-aarch64-unknown-linux-gnu.tar.gz` for ARM64
+            ### 📥 Native Linux Binaries
+
+            Download from Assets below:
+            - `summit-x86_64-unknown-linux-gnu.tar.gz` for Intel/AMD 64-bit
+            - `summit-aarch64-unknown-linux-gnu.tar.gz` for ARM64 (Raspberry Pi, etc.)
+
+            ```bash
+            # Extract and install
+            tar xzf summit-x86_64-unknown-linux-gnu.tar.gz
+            sudo mv summitd summit-ctl /usr/local/bin/
+
+            # Run
+            sudo summitd wlp5s0
+            ```
 
             ### ⚡ Quick Start
 
             ```bash
-            # Trust a peer
-            summit-ctl trust add <peer-pubkey>
-
-            # Send a file
-            summit-ctl send document.pdf
-
             # Check status
             summit-ctl status
+
+            # List discovered peers
+            summit-ctl peers
+
+            # Trust a peer (both peers must trust each other)
+            summit-ctl trust add <peer-pubkey>
+
+            # Send a file (broadcasts to all trusted peers)
+            summit-ctl send document.pdf
+
+            # Access Web UI
+            open http://127.0.0.1:9001
             ```
 
-            ### 🔐 Security Note
+            ### 🔐 Security Features
 
-            Summit uses:
-            - Noise_XX protocol for encryption
-            - Trust-based security model (mutual trust required)
-            - No automatic code execution
-            - Bounded resource usage
+            - ✅ Noise_XX protocol encryption (same as WireGuard)
+            - ✅ Trust-based security model (mutual trust required)
+            - ✅ No automatic code execution
+            - ✅ Bounded resource usage
+            - ✅ Chunk buffering for untrusted peers
 
-            ### 📖 Documentation
+            ### 📚 Documentation
 
-            Full docs: https://github.com/${{ github.repository }}
+            - Full documentation: https://github.com/${{ github.repository }}
+            - Installation guide: https://github.com/${{ github.repository }}/blob/main/docs/DEPENDENCIES.md
+            - API reference: https://github.com/${{ github.repository }}/blob/main/README.md#api-endpoints
+
+            ### 🐛 Known Issues
+
+            - Linux only (requires IPv6 link-local and network namespaces)
+            - Use Docker on macOS/Windows
+
+            ### 📝 Changelog
+
+            See full changes in the auto-generated release notes below.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   release-binaries:
-    name: Build Native Binaries
+    name: Build Native Binaries (${{ matrix.target }})
     runs-on: ubuntu-latest
     permissions:
       contents: write
