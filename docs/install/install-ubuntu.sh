@@ -1,6 +1,5 @@
 #!/bin/bash
-# Summit Protocol - Arch Linux Setup
-# Installs dependencies and Summit from GitHub releases
+# Summit Protocol - Ubuntu/Debian Setup
 set -e
 
 VERSION="${1:-latest}"
@@ -12,28 +11,29 @@ RED='\033[0;31m'
 NC='\033[0m'
 
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${GREEN}Summit Protocol - Arch Linux Setup${NC}"
+echo -e "${GREEN}Summit Protocol - Ubuntu/Debian Setup${NC}"
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 
 if [ "$EUID" -ne 0 ]; then 
-    echo -e "${RED}Please run as root (sudo ./install-arch.sh)${NC}"
+    echo -e "${RED}Please run as root (sudo ./install-ubuntu.sh)${NC}"
     exit 1
 fi
 
 # Step 1: Update system
 echo -e "${YELLOW}[1/4] Updating system...${NC}"
-pacman -Syu --noconfirm
+apt-get update
+apt-get upgrade -y
 
 # Step 2: Install dependencies
 echo -e "${YELLOW}[2/4] Installing dependencies...${NC}"
-pacman -S --noconfirm \
+apt-get install -y \
     curl \
     tar \
     iproute2 \
     iw \
-    wireless_tools \
-    wpa_supplicant \
+    wireless-tools \
+    wpasupplicant \
     jq
 
 # Step 3: Download and install Summit
@@ -65,7 +65,6 @@ rm -rf "$TEMP_DIR"
 # Step 4: Setup systemd service
 echo -e "${YELLOW}[4/4] Creating systemd service...${NC}"
 
-# Create WiFi detection script
 cat > /usr/local/bin/summit-detect-wifi << 'EOF'
 #!/bin/bash
 WIFI=$(ip link show | grep -oP 'wl[a-z0-9]+' | head -1)
@@ -76,7 +75,6 @@ echo "ERROR: No WiFi interface" >&2; exit 1
 EOF
 chmod +x /usr/local/bin/summit-detect-wifi
 
-# Create systemd service
 cat > /etc/systemd/system/summit.service << 'EOF'
 [Unit]
 Description=Summit Protocol Daemon
