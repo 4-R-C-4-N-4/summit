@@ -217,9 +217,21 @@ jobs:
             npm i
             npm run build:electron
 
-      - name: Upload UI to release
-        uses: softprops/action-gh-release@v1
-        with:
-            files: astral/dist-electron/*.AppImage
+      - name: Find AppImage
+        id: appimage
+        run: |
+            cd astral/dist-electron
+            APPIMAGE=$(ls *.AppImage | head -1)
+            echo "filename=$APPIMAGE" >> $GITHUB_OUTPUT
+            echo "path=astral/dist-electron/$APPIMAGE" >> $GITHUB_OUTPUT
+
+      - name: Upload AppImage
+        uses: actions/upload-release-asset@v1
         env:
             GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+            upload_url: ${{ needs.create-release.outputs.upload_url }}
+            asset_path: ${{ steps.appimage.outputs.path }}
+            asset_name: summit-ui-linux.AppImage
+            asset_content_type: application/octet-stream
+
