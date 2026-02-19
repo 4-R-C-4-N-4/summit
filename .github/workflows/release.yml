@@ -201,7 +201,7 @@ jobs:
     needs: create-release
     strategy:
       matrix:
-        os: [macos-latest, ubuntu-latest, windows-latest]
+        os: [macos-latest, ubuntu-latest]
 
     steps:
       - uses: actions/checkout@v4
@@ -214,7 +214,7 @@ jobs:
       - name: Build UI
         run: |
             cd astral
-            npm ci
+            npm i
             npm run build:electron
 
       - name: Upload AppImage (Linux)
