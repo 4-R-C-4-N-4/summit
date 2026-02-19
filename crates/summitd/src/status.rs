@@ -29,7 +29,7 @@ use mime_guess;
 #[cfg(feature = "embed-ui")]
 #[derive(RustEmbed)]
 #[folder = "../astral/dist"]
-struct WebAssets;
+// struct WebAssets;
 
 #[derive(Clone)]
 pub struct StatusState {
@@ -624,7 +624,7 @@ async fn handle_schema_list() -> Json<SchemaListResponse> {
 
 // ── Static Files (SPA) ────────────────────────────────────────────────────────
 
-
+/*
 #[cfg(feature = "embed-ui")]
 async fn serve_static(uri: axum::http::Uri) -> impl IntoResponse {
     let path = uri.path().trim_start_matches('/');
@@ -678,7 +678,7 @@ async fn serve_static(_uri: axum::http::Uri) -> impl IntoResponse {
         </html>"
     ))
     .unwrap()
-}
+}*/
 
 // ── Router ────────────────────────────────────────────────────────────────────
 
