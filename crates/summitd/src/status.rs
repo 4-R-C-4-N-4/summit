@@ -21,6 +21,10 @@ use axum::response::{Response, IntoResponse};
 use axum::body::Body;
 use axum::http::{header, StatusCode as HttpStatusCode};
 
+#[cfg(feature = "embed-ui")]
+use rust_embed::RustEmbed;
+#[cfg(feature = "embed-ui")]
+use mime_guess;
 
 #[cfg(feature = "embed-ui")]
 #[derive(RustEmbed)]
