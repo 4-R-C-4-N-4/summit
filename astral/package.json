@@ -19,6 +19,7 @@
     "networking"
   ],
   "author": "Ivy Dearest",
+  "email": "4rc4n4.game@protonmail.com",
   "license": "MIT",
   "devDependencies": {
     "@vitejs/plugin-react": "^4.2.1",
@@ -41,14 +42,15 @@
     "files": [
       "dist/**/*",
       "main.js",
-      "preload.js"
+      "preload.js",
+      "!node_modules/**/*",
+      "node_modules/electron/**/*"
     ],
     "linux": {
-      "target": [
-        "AppImage",
-        "deb"
-      ],
-      "category": "Network"
+      "target": ["AppImage"],
+      "category": "Network",
+      "maintainer": "4rc4n4.game@protonmail.com",
+      "synopsis": "Summit Protocol Desktop UI"
     },
     "mac": {
       "target": [
