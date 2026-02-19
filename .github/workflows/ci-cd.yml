@@ -51,56 +51,61 @@ jobs:
 #         run: cargo fmt --all -- --check
 
   build:
-    name: Build (${{ matrix.target }})
-    runs-on: ubuntu-latest
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     needs: test
     strategy:
-        matrix:
+      matrix:
         include:
-            - target: x86_64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: summitd
             asset_name: summit-linux-amd64
-            - target: aarch64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            artifact_name: summitd
             asset_name: summit-linux-arm64
 
     steps:
-        - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-        - name: Install Rust
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-            targets: ${{ matrix.target }}
+          targets: ${{ matrix.target }}
 
-        - name: Install cross-compilation tools (ARM64)
+      - name: Install cross-compilation tools (Linux ARM64)
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: |
-            sudo apt-get update
-            sudo apt-get install -y gcc-aarch64-linux-gnu
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
 
-        - name: Build summitd
+      - name: Build summitd
         run: cargo build --release --target ${{ matrix.target }} -p summitd
 
-        - name: Build summit-ctl
+      - name: Build summit-ctl
         run: cargo build --release --target ${{ matrix.target }} -p summit-ctl
 
-        - name: Strip binaries
+      - name: Strip binaries (Linux/macOS)
+        if: matrix.os != 'windows-latest'
         run: |
-            ${{ matrix.target == 'aarch64-unknown-linux-gnu' && 'aarch64-linux-gnu-strip' || 'strip' }} target/${{ matrix.target }}/release/summitd || true
-            ${{ matrix.target == 'aarch64-unknown-linux-gnu' && 'aarch64-linux-gnu-strip' || 'strip' }} target/${{ matrix.target }}/release/summit-ctl || true
+          strip target/${{ matrix.target }}/release/summitd || true
+          strip target/${{ matrix.target }}/release/summit-ctl || true
 
-        - name: Create release archive
+      - name: Create release archive
         run: |
-            mkdir -p release
-            cp target/${{ matrix.target }}/release/summitd release/
-            cp target/${{ matrix.target }}/release/summit-ctl release/
-            cp README.md LICENSE release/ || true
-            cd release
-            tar czf ${{ matrix.asset_name }}.tar.gz *
+          mkdir -p release
+          cp target/${{ matrix.target }}/release/summitd release/
+          cp target/${{ matrix.target }}/release/summit-ctl release/
+          cp README.md LICENSE release/ || true
+          cd release
+          tar czf ${{ matrix.asset_name }}.tar.gz *
 
-        - name: Upload artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-            name: ${{ matrix.asset_name }}
-            path: release/${{ matrix.asset_name }}.tar.gz
+          name: ${{ matrix.asset_name }}
+          path: release/${{ matrix.asset_name }}.tar.gz
 
   build-ui:
     name: Build with Embedded UI
