@@ -9,23 +9,76 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
-  release-docker:
-    name: Release Docker Image
+  create-release:
+    name: Create GitHub Release
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      packages: write
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+      version: ${{ steps.version.outputs.VERSION }}
     steps:
-      - uses: actions/checkout@v4
-
       - name: Extract version
         id: version
         run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
 
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: Summit Protocol ${{ steps.version.outputs.VERSION }}
+          generate_release_notes: true
+          draft: false
+          body: |
+            ## Summit Protocol ${{ steps.version.outputs.VERSION }}
+
+            Peer-to-peer mesh networking for direct device communication.
+
+            ### 🐳 Docker (Recommended)
+
+            ```bash
+            # Pull and run
+            docker pull ghcr.io/${{ github.repository_owner }}/summit:${{ steps.version.outputs.VERSION }}
+            docker run -it --rm --privileged --network host \
+              ghcr.io/${{ github.repository_owner }}/summit:${{ steps.version.outputs.VERSION }}
+
+            # Inside container
+            summitd wlp5s0
+            ```
+
+            ### 📦 Native Linux (Download from Assets)
+
+            - `summit-x86_64-unknown-linux-gnu.tar.gz` - Intel/AMD 64-bit
+            - `summit-aarch64-unknown-linux-gnu.tar.gz` - ARM64 (Raspberry Pi, Apple Silicon via Rosetta)
+
+            ```bash
+            tar xzf summit-x86_64-unknown-linux-gnu.tar.gz
+            sudo mv summitd summit-ctl /usr/local/bin/
+            sudo summitd wlp5s0
+            ```
+
+            ### ⚡ Quick Start
+
+            ```bash
+            summit-ctl status
+            summit-ctl trust add <peer-pubkey>
+            summit-ctl send document.pdf
+            ```
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  release-docker:
+    name: Release Docker Image
+    runs-on: ubuntu-latest
+    needs: create-release
+    permissions:
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
       - name: Build image name
         id: image
         run: |
-          # GitHub Container Registry requires lowercase
           REPO="${{ github.repository }}"
           IMAGE_NAME=$(echo "${REPO}" | tr '[:upper:]' '[:lower:]')
           echo "name=${REGISTRY}/${IMAGE_NAME}" >> $GITHUB_OUTPUT
@@ -49,137 +102,94 @@ jobs:
           push: true
           platforms: linux/amd64
           tags: |
-            ${{ steps.image.outputs.name }}:${{ steps.version.outputs.VERSION }}
+            ${{ steps.image.outputs.name }}:${{ needs.create-release.outputs.version }}
             ${{ steps.image.outputs.name }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
-        with:
-          generate_release_notes: true
-          body: |
-            ## Summit Protocol ${{ steps.version.outputs.VERSION }}
+  release-binary-x64:
+    name: Build x86_64 Binary
+    runs-on: ubuntu-latest
+    needs: create-release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
 
-            Peer-to-peer mesh networking for direct device communication.
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
 
-            ### 🐳 Docker (Recommended)
+      - name: Build binaries
+        run: |
+          cargo build --release -p summitd
+          cargo build --release -p summit-ctl
 
-            ```bash
-            # Pull image
-            docker pull ${{ steps.image.outputs.name }}:${{ steps.version.outputs.VERSION }}
+      - name: Verify binaries
+        run: |
+          ls -lh target/release/summitd
+          ls -lh target/release/summit-ctl
+          file target/release/summitd
 
-            # Run Summit
-            docker run -it --rm --privileged --network host \
-              ${{ steps.image.outputs.name }}:${{ steps.version.outputs.VERSION }}
+      - name: Strip binaries
+        run: |
+          strip target/release/summitd
+          strip target/release/summit-ctl
 
-            # Inside container
-            summitd wlp5s0
+      - name: Create archive
+        run: |
+          cd target/release
+          tar czf summit-x86_64-unknown-linux-gnu.tar.gz summitd summit-ctl
+          ls -lh summit-x86_64-unknown-linux-gnu.tar.gz
 
-            # Access Web UI at http://127.0.0.1:9001
-            ```
-
-            ### 📦 Docker Compose
-
-            ```yaml
-            services:
-              summit:
-                image: ${{ steps.image.outputs.name }}:${{ steps.version.outputs.VERSION }}
-                privileged: true
-                network_mode: host
-                restart: unless-stopped
-                command: summitd wlp5s0
-            ```
-
-            ### 📥 Native Linux Binaries
-
-            Download from Assets below:
-            - `summit-x86_64-unknown-linux-gnu.tar.gz` for Intel/AMD 64-bit
-            - `summit-aarch64-unknown-linux-gnu.tar.gz` for ARM64 (Raspberry Pi, etc.)
-
-            ```bash
-            # Extract and install
-            tar xzf summit-x86_64-unknown-linux-gnu.tar.gz
-            sudo mv summitd summit-ctl /usr/local/bin/
-
-            # Run
-            sudo summitd wlp5s0
-            ```
-
-            ### ⚡ Quick Start
-
-            ```bash
-            # Check status
-            summit-ctl status
-
-            # List discovered peers
-            summit-ctl peers
-
-            # Trust a peer (both peers must trust each other)
-            summit-ctl trust add <peer-pubkey>
-
-            # Send a file (broadcasts to all trusted peers)
-            summit-ctl send document.pdf
-
-            # Access Web UI
-            open http://127.0.0.1:9001
-            ```
-
-            ### 🔐 Security Features
-
-            - ✅ Noise_XX protocol encryption (same as WireGuard)
-            - ✅ Trust-based security model (mutual trust required)
-            - ✅ No automatic code execution
-            - ✅ Bounded resource usage
-            - ✅ Chunk buffering for untrusted peers
-
-            ### 📚 Documentation
-
-            - Full documentation: https://github.com/${{ github.repository }}
-            - Installation guide: https://github.com/${{ github.repository }}/blob/main/docs/DEPENDENCIES.md
-            - API reference: https://github.com/${{ github.repository }}/blob/main/README.md#api-endpoints
-
-            ### 🐛 Known Issues
-
-            - Linux only (requires IPv6 link-local and network namespaces)
-            - Use Docker on macOS/Windows
-
-            ### 📝 Changelog
-
-            See full changes in the auto-generated release notes below.
+      - name: Upload to release
+        uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ./target/release/summit-x86_64-unknown-linux-gnu.tar.gz
+          asset_name: summit-x86_64-unknown-linux-gnu.tar.gz
+          asset_content_type: application/gzip
 
-    release-binaries:
-        name: Build Native Binary
-        runs-on: ubuntu-latest
-        needs: release-docker
-        permissions:
-            contents: write
-        steps:
-            - uses: actions/checkout@v4
+  release-binary-arm64:
+    name: Build ARM64 Binary
+    runs-on: ubuntu-latest
+    needs: create-release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
 
-            - name: Install Rust
-            uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
 
-            - name: Build binaries
-            run: |
-                cargo build --release -p summitd
-                cargo build --release -p summit-ctl
+      - name: Install cross
+        run: |
+          cargo install cross --git https://github.com/cross-rs/cross
 
-            - name: Strip binaries
-            run: |
-                strip target/release/summitd
-                strip target/release/summit-ctl
+      - name: Build with cross
+        run: |
+          cross build --release --target aarch64-unknown-linux-gnu -p summitd
+          cross build --release --target aarch64-unknown-linux-gnu -p summit-ctl
 
-            - name: Create archive
-            run: |
-                cd target/release
-                tar czf ../../summit-x86_64-unknown-linux-gnu.tar.gz summitd summit-ctl
+      - name: Verify binaries
+        run: |
+          ls -lh target/aarch64-unknown-linux-gnu/release/summitd
+          ls -lh target/aarch64-unknown-linux-gnu/release/summit-ctl
+          file target/aarch64-unknown-linux-gnu/release/summitd
 
-            - name: Upload to release
-            uses: softprops/action-gh-release@v1
-            with:
-                files: summit-x86_64-unknown-linux-gnu.tar.gz
-            env:
-                GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create archive
+        run: |
+          cd target/aarch64-unknown-linux-gnu/release
+          tar czf summit-aarch64-unknown-linux-gnu.tar.gz summitd summit-ctl
+          ls -lh summit-aarch64-unknown-linux-gnu.tar.gz
+
+      - name: Upload to release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ./target/aarch64-unknown-linux-gnu/release/summit-aarch64-unknown-linux-gnu.tar.gz
+          asset_name: summit-aarch64-unknown-linux-gnu.tar.gz
+          asset_content_type: application/gzip
