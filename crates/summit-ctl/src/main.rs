@@ -113,7 +113,7 @@ struct FilesResponse {
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
 
 fn base_url(port: u16) -> String {
-    format!("http://127.0.0.1:{}", port)
+    format!("http://127.0.0.1:{}/api", port)
 }
 
 async fn get_json<T: for<'de> Deserialize<'de>>(url: &str) -> Result<T> {

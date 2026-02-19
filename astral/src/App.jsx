@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 
 // ─── API Client ───────────────────────────────────────────────────────────────
 
-const API_BASE = 'http://127.0.0.1:9001';
+const API_BASE = 'http://127.0.0.1:9001/api';  // Production: full URL
 
 const api = {
   getStatus: () => fetch(`${API_BASE}/status`).then(r => r.json()),
@@ -108,6 +108,7 @@ function NavBar({ active, onNav }) {
   const tabs = [
     { id: "nearby", label: "Nearby", icon: "⬡" },
     { id: "sessions", label: "Sessions", icon: "≡" },
+    { id: "messages", label: "Messages", icon: "◇" },
     { id: "files", label: "Files", icon: "◈" },
     { id: "system", label: "System", icon: "◎" },
   ];
@@ -460,6 +461,228 @@ function FilesScreen({ files, onSendFile }) {
   );
 }
 
+// ─── Messages Screen ──────────────────────────────────────────────────────────
+
+function MessagesScreen({ peers, trust, onSendMessage }) {
+  const [selectedPeer, setSelectedPeer] = useState(null);
+  const [message, setMessage] = useState('');
+  const [messages, setMessages] = useState({});
+
+  const trustMap = {};
+  trust.forEach(t => trustMap[t.public_key] = t.level);
+
+  const trustedPeers = peers.filter(p => trustMap[p.public_key] === 'Trusted');
+
+  const handleSend = async () => {
+    if (!message.trim() || !selectedPeer) return;
+
+    const msgData = {
+      from: 'you',
+      to: selectedPeer,
+      text: message,
+      timestamp: Date.now()
+    };
+
+    // Add to local messages
+    setMessages(prev => ({
+      ...prev,
+      [selectedPeer]: [...(prev[selectedPeer] || []), msgData]
+    }));
+
+    // Send via file transfer (text file with peer targeting)
+    const blob = new Blob([message], { type: 'text/plain' });
+    const file = new File([blob], `msg-${Date.now()}.txt`, { type: 'text/plain' });
+
+    try {
+      await onSendMessage(file, { type: 'peer', public_key: selectedPeer });
+      setMessage('');
+    } catch (err) {
+      console.error('Failed to send message:', err);
+    }
+  };
+
+  return (
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+    {/* Peer list sidebar */}
+    <div style={{
+      borderBottom: '1px solid rgba(245,166,35,0.15)',
+          padding: '12px',
+          background: 'rgba(0,0,0,0.2)'
+    }}>
+    <SectionHeader label="Direct Messages" count={trustedPeers.length} accent="#f5a623" />
+
+    {trustedPeers.length === 0 ? (
+      <div style={{
+        padding: '20px',
+        textAlign: 'center',
+        fontFamily: "'Space Mono', monospace",
+        fontSize: 10,
+        color: 'rgba(255,255,255,0.3)'
+      }}>
+      Trust a peer to send messages
+      </div>
+    ) : (
+      <div style={{ display: 'flex', gap: 6, overflowX: 'auto', paddingBottom: 4 }}>
+      {trustedPeers.map(peer => (
+        <button
+        key={peer.public_key}
+        onClick={() => setSelectedPeer(peer.public_key)}
+        style={{
+          flex: '0 0 auto',
+          padding: '6px 10px',
+          background: selectedPeer === peer.public_key
+          ? 'rgba(245,166,35,0.2)'
+          : 'rgba(255,255,255,0.05)',
+                                 border: `1px solid ${selectedPeer === peer.public_key
+                                   ? 'rgba(245,166,35,0.4)'
+                                   : 'rgba(255,255,255,0.1)'}`,
+                                 borderRadius: 6,
+                                 color: selectedPeer === peer.public_key ? '#f5a623' : 'rgba(255,255,255,0.6)',
+                                 fontFamily: "'Space Mono', monospace",
+                                 fontSize: 10,
+                                 cursor: 'pointer',
+                                 display: 'flex',
+                                 alignItems: 'center',
+                                 gap: 6,
+        }}
+        >
+        <PulseDot
+        color={peer.last_seen_secs < 5 ? '#4a9e6b' : 'rgba(255,255,255,0.3)'}
+        size={6}
+        />
+        {shortKey(peer.public_key)}
+        </button>
+      ))}
+      </div>
+    )}
+    </div>
+
+    {/* Messages area */}
+    {selectedPeer ? (
+      <>
+      <div style={{
+        flex: 1,
+        overflowY: 'auto',
+        padding: '12px',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 8
+      }}>
+      {(messages[selectedPeer] || []).length === 0 ? (
+        <div style={{
+          flex: 1,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontFamily: "'Space Mono', monospace",
+          fontSize: 10,
+          color: 'rgba(255,255,255,0.3)'
+        }}>
+        No messages yet. Send the first one!
+        </div>
+      ) : (
+        messages[selectedPeer].map((msg, i) => (
+          <div
+          key={i}
+          style={{
+            padding: '8px 12px',
+            borderRadius: 8,
+            background: msg.from === 'you'
+            ? 'rgba(245,166,35,0.15)'
+            : 'rgba(255,255,255,0.05)',
+                                                border: `1px solid ${msg.from === 'you'
+                                                  ? 'rgba(245,166,35,0.3)'
+                                                  : 'rgba(255,255,255,0.1)'}`,
+                                                alignSelf: msg.from === 'you' ? 'flex-end' : 'flex-start',
+                                                maxWidth: '80%'
+          }}
+          >
+          <div style={{
+            fontFamily: "'Space Mono', monospace",
+            fontSize: 11,
+            color: '#f0ead6',
+            wordBreak: 'break-word'
+          }}>
+          {msg.text}
+          </div>
+          <div style={{
+            fontFamily: "'Space Mono', monospace",
+            fontSize: 8,
+            color: 'rgba(255,255,255,0.3)',
+                                                marginTop: 4
+          }}>
+          {new Date(msg.timestamp).toLocaleTimeString()}
+          </div>
+          </div>
+        ))
+      )}
+      </div>
+
+      {/* Message input */}
+      <div style={{
+        padding: '12px',
+        borderTop: '1px solid rgba(245,166,35,0.15)',
+                     background: 'rgba(0,0,0,0.3)',
+                     display: 'flex',
+                     gap: 8
+      }}>
+      <input
+      type="text"
+      value={message}
+      onChange={(e) => setMessage(e.target.value)}
+      onKeyPress={(e) => e.key === 'Enter' && handleSend()}
+      placeholder="Type a message..."
+      style={{
+        flex: 1,
+        padding: '8px 12px',
+        background: 'rgba(255,255,255,0.05)',
+                     border: '1px solid rgba(255,255,255,0.1)',
+                     borderRadius: 6,
+                     color: '#f0ead6',
+                     fontFamily: "'Space Mono', monospace",
+                     fontSize: 11,
+                     outline: 'none'
+      }}
+      />
+      <button
+      onClick={handleSend}
+      disabled={!message.trim()}
+      style={{
+        padding: '8px 16px',
+        background: message.trim()
+        ? 'rgba(245,166,35,0.2)'
+        : 'rgba(255,255,255,0.05)',
+                     border: `1px solid ${message.trim()
+                       ? 'rgba(245,166,35,0.4)'
+                       : 'rgba(255,255,255,0.1)'}`,
+                     borderRadius: 6,
+                     color: message.trim() ? '#f5a623' : 'rgba(255,255,255,0.3)',
+                     fontFamily: "'Space Mono', monospace",
+                     fontSize: 10,
+                     cursor: message.trim() ? 'pointer' : 'not-allowed',
+      }}
+      >
+      Send
+      </button>
+      </div>
+      </>
+    ) : (
+      <div style={{
+        flex: 1,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontFamily: "'Space Mono', monospace",
+        fontSize: 11,
+        color: 'rgba(255,255,255,0.3)'
+      }}>
+      Select a peer to start messaging
+      </div>
+    )}
+    </div>
+  );
+}
+
 // ─── System Screen ────────────────────────────────────────────────────────────
 
 function SystemScreen({ status, cache, schemas }) {
@@ -612,6 +835,8 @@ export default function App() {
         return <NearbyScreen peers={peers} trust={trust} onTrust={handleTrust} onBlock={handleBlock} />;
       case "sessions":
         return <SessionsScreen sessions={status.sessions || []} onDropSession={handleDropSession} />;
+      case "messages":
+        return <MessagesScreen peers={peers} trust={trust} onSendMessage={handleSendFile} />;
       case "files":
         return <FilesScreen files={files} onSendFile={handleSendFile} />;
       case "system":

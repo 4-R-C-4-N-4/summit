@@ -8,10 +8,8 @@ use anyhow::{bail, Context, Result};
 /// Known schema IDs (precomputed BLAKE3 hashes of schema names).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KnownSchema {
-    /// summit.test.ping — simple ping messages
     TestPing,
-    /// summit.message.text — UTF-8 text messages
-    TextMessage,
+    Message,
     /// summit.file.chunk — arbitrary binary data
     FileChunk,
     FileData,
@@ -23,19 +21,28 @@ impl KnownSchema {
     pub fn from_id(schema_id: &[u8; 32]) -> Option<Self> {
         // Precomputed at build time
         let test_ping_id = summit_core::crypto::hash(b"summit.test.ping");
-        let text_message_id = summit_core::crypto::hash(b"summit.message.text");
         let file_chunk_id = summit_core::crypto::hash(b"summit.file.chunk");
+        let message_id = summit_core::crypto::hash(b"summit.message");
 
         if schema_id == &test_ping_id {
             Some(Self::TestPing)
-        } else if schema_id == &text_message_id {
-            Some(Self::TextMessage)
         } else if schema_id == &file_chunk_id {
             Some(Self::FileChunk)
+        } else if schema_id ==  &message_id {
+            Some(Self::Message)
         } else {
             None
         }
     }
+
+    // pub fn type_tag(&self) -> Option<u8> {
+    //     match self {
+    //         Self::TestPing => Some(1),
+    //         Self::FileData => Some(2),
+    //         Self::FileMetadata => Some(3),
+    //         Self::Message => Some(4),
+    //     }
+    // }
 
     /// Validate a chunk payload against this schema.
     pub fn validate(&self, payload: &[u8]) -> Result<()> {
@@ -51,12 +58,6 @@ impl KnownSchema {
                 Ok(())
             }
             
-            Self::TextMessage => {
-                std::str::from_utf8(payload)
-                    .context("text message must be UTF-8")?;
-                Ok(())
-            }
-            
             Self::FileChunk => {
                 // No validation — arbitrary bytes allowed
                 Ok(())
@@ -67,6 +68,7 @@ impl KnownSchema {
                 .context("invalid file metadata JSON")?;
                 Ok(())
             }
+            Self::Message => Ok(()),
         }
     }
 
@@ -74,10 +76,10 @@ impl KnownSchema {
     pub fn id(&self) -> [u8; 32] {
         match self {
             Self::TestPing    => summit_core::crypto::hash(b"summit.test.ping"),
-            Self::TextMessage => summit_core::crypto::hash(b"summit.message.text"),
             Self::FileChunk   => summit_core::crypto::hash(b"summit.file.chunk"),
             Self::FileData    => summit_core::crypto::hash(b"summit.file.data"),
             Self::FileMetadata => summit_core::crypto::hash(b"summit.file.metadata"),
+            Self::Message => summit_core::crypto::hash(b"summit.message"),
         }
     }
 
@@ -85,19 +87,19 @@ impl KnownSchema {
     pub fn name(&self) -> &'static str {
         match self {
             Self::TestPing => "summit.test.ping",
-            Self::TextMessage => "summit.message.text",
             Self::FileChunk => "summit.file.chunk",
             Self::FileData     => "summit.file.data",
             Self::FileMetadata => "summit.file.metadata",
+            Self::Message => "summit.message",
         }
     }
 
     pub fn validator(&self) -> Option<Box<dyn Fn(&[u8]) -> bool + Send + Sync>> {
         match self {
             Self::TestPing => Some(Box::new(validate_test_ping)),
-            Self::TextMessage => Some(Box::new(validate_text_message)),
             Self::FileMetadata => Some(Box::new(validate_file_metadata)),
             Self::FileChunk | Self::FileData => None, // raw bytes, no validation needed
+            Self::Message => None,
         }
     }
 
@@ -108,10 +110,6 @@ impl KnownSchema {
 // ── Validation functions ──────────────────────────────────────────────────────
 
 fn validate_test_ping(payload: &[u8]) -> bool {
-    std::str::from_utf8(payload).is_ok()
-}
-
-fn validate_text_message(payload: &[u8]) -> bool {
     std::str::from_utf8(payload).is_ok()
 }
 
@@ -134,18 +132,6 @@ mod tests {
         // Invalid
         assert!(schema.validate(b"pong #1").is_err());
         assert!(schema.validate(b"hello").is_err());
-        assert!(schema.validate(&[0xFF, 0xFE]).is_err());
-    }
-
-    #[test]
-    fn test_text_message_validation() {
-        let schema = KnownSchema::TextMessage;
-        
-        // Valid
-        assert!(schema.validate(b"hello world").is_ok());
-        assert!(schema.validate(b"").is_ok());
-        
-        // Invalid
         assert!(schema.validate(&[0xFF, 0xFE]).is_err());
     }
 

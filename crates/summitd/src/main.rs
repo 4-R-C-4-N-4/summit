@@ -22,7 +22,9 @@ mod status;
 mod transfer;
 mod trust;
 mod send_target;
+mod message_store;
 
+use message_store::MessageStore;
 use trust::{TrustRegistry, TrustLevel, UntrustedBuffer};
 use send_target::SendTarget;
 use status::StatusState;
@@ -83,6 +85,8 @@ async fn main() -> Result<()> {
     // let capabilities = Arc::new(vec![test_capability.clone()]);
     let registry  = new_registry();
     let sessions  = new_session_table();
+
+    let message_store = MessageStore::new();
 
     // Handshake state tracking (shared between initiator and listener)
     let handshake_tracker = session::HandshakeTracker::shared();
@@ -593,10 +597,13 @@ async fn main() -> Result<()> {
         let reassembler_ref = reassembler.clone();
         let trust_ref = trust_registry.clone();
         let buffer_ref = untrusted_buffer.clone();
+        let message_store_ref = message_store.clone();
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(1));
             let mut seen_sessions = std::collections::HashSet::new();
+
+            use summit_core::message::MessageChunk;
 
             loop {
                 interval.tick().await;
@@ -614,6 +621,7 @@ async fn main() -> Result<()> {
                         let peer_pubkey = active.meta.peer_pubkey;
                         let trust = trust_ref.clone();
                         let buffer = buffer_ref.clone();
+                        let message_store = message_store_ref.clone();
 
                         // Create channel for received chunks
                         let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::channel::<chunk::IncomingChunk>(100);
@@ -650,6 +658,26 @@ async fn main() -> Result<()> {
                                                payload_len = chunk.payload.len(),
                                                "chunk received"
                                 );
+
+                                if chunk.type_tag == 4 {
+                                    // Message chunk
+                                    match MessageChunk::from_bytes(&chunk.payload) {
+                                        Ok(message) => {
+                                            tracing::info!(
+                                                msg_id = hex::encode(message.msg_id),
+                                                from = hex::encode(&message.sender[..8]),
+                                                msg_type = ?message.msg_type,
+                                                "message received"
+                                            );
+
+                                            // Store message
+                                            message_store.add(message.sender, message.clone());
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(error = %e, "failed to parse message");
+                                        }
+                                    }
+                                }
 
                                 // Handle file metadata chunks (type_tag 3)
                                 if chunk.type_tag == 3 {
@@ -820,6 +848,7 @@ async fn main() -> Result<()> {
             reassembler: reassembler.clone(),
             trust:            trust_registry.clone(),
             untrusted_buffer: untrusted_buffer.clone(),
+            message_store:    message_store.clone(),
         };
         tokio::spawn(async move {
             if let Err(e) = status::serve(state, status_port).await {

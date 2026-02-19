@@ -13,11 +13,14 @@ use crate::capability::PeerRegistry;
 use crate::trust::{TrustRegistry, TrustLevel, UntrustedBuffer};
 use crate::send_target::SendTarget;
 use crate::schema::KnownSchema;
+use crate::message_store::MessageStore;
+
+use summit_core::message::MessageChunk;
 use tower_http::cors::{CorsLayer, Any};
-use rust_embed::RustEmbed;
 use axum::response::{Response, IntoResponse};
 use axum::body::Body;
 use axum::http::{header, StatusCode as HttpStatusCode};
+
 
 #[cfg(feature = "embed-ui")]
 #[derive(RustEmbed)]
@@ -33,6 +36,7 @@ pub struct StatusState {
     pub reassembler:      std::sync::Arc<crate::transfer::FileReassembler>,
     pub trust:            TrustRegistry,
     pub untrusted_buffer: UntrustedBuffer,
+    pub message_store: MessageStore,
 }
 
 // ── /status ──────────────────────────────────────────────────────────────────
@@ -67,12 +71,12 @@ async fn handle_status(State(state): State<StatusState>) -> Json<StatusResponse>
         let trust_level = state.trust.check(&meta.peer_pubkey);
         SessionInfo {
             session_id:       hex::encode(meta.session_id),
-                                             peer:             meta.peer_addr.to_string(),
-                                             peer_pubkey:      hex::encode(meta.peer_pubkey),
-                                             contract:         format!("{:?}", meta.contract),
-                                             chunk_port:       meta.chunk_port,
-                                             established_secs: meta.established_at.elapsed().as_secs(),
-                                             trust_level:      format!("{:?}", trust_level),
+            peer:             meta.peer_addr.to_string(),
+            peer_pubkey:      hex::encode(meta.peer_pubkey),
+            contract:         format!("{:?}", meta.contract),
+            chunk_port:       meta.chunk_port,
+            established_secs: meta.established_at.elapsed().as_secs(),
+            trust_level:      format!("{:?}", trust_level),
         }
     }).collect();
 
@@ -246,6 +250,121 @@ async fn handle_files(State(state): State<StatusState>) -> Json<FilesResponse> {
     Json(FilesResponse { received, in_progress })
 }
 
+
+// ── /message ────────────────────────────────────────────────────────────────────
+
+
+// ── /messages/{peer_pubkey} (GET) ─────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct MessagesResponse {
+    pub peer_pubkey: String,
+    pub messages: Vec<MessageJson>,
+}
+
+#[derive(Serialize)]
+pub struct MessageJson {
+    pub msg_id: String,
+    pub from: String,
+    pub to: String,
+    pub msg_type: String,
+    pub timestamp: u64,
+    pub content: serde_json::Value,
+}
+
+async fn handle_get_messages(
+    State(state): State<StatusState>,
+                             Path(peer_pubkey): Path<String>,
+) -> Result<Json<MessagesResponse>, (StatusCode, String)> {
+    let pubkey_bytes = hex::decode(&peer_pubkey)
+    .map_err(|_| (StatusCode::BAD_REQUEST, "invalid hex".to_string()))?;
+
+    if pubkey_bytes.len() != 32 {
+        return Err((StatusCode::BAD_REQUEST, "public key must be 32 bytes".to_string()));
+    }
+
+    let mut pubkey = [0u8; 32];
+    pubkey.copy_from_slice(&pubkey_bytes);
+
+    let messages = state.message_store.get(&pubkey);
+
+    let messages_json: Vec<MessageJson> = messages.into_iter().map(|m| {
+        MessageJson {
+            msg_id: hex::encode(m.msg_id),
+            from: hex::encode(m.sender),
+            to: hex::encode(m.recipient),
+            msg_type: format!("{:?}", m.msg_type),
+            timestamp: m.timestamp,
+            content: serde_json::to_value(&m.content).unwrap(),
+        }
+    }).collect();
+
+    Ok(Json(MessagesResponse {
+        peer_pubkey,
+        messages: messages_json,
+    }))
+}
+
+// ── /messages/send (POST) ─────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct SendMessageRequest {
+    pub to: String,           // peer public key (hex)
+    pub text: String,         // message text
+}
+
+#[derive(Serialize)]
+pub struct SendMessageResponse {
+    pub msg_id: String,
+    pub timestamp: u64,
+}
+
+async fn handle_send_message(
+    State(state): State<StatusState>,
+                             Json(req): Json<SendMessageRequest>,
+) -> Result<Json<SendMessageResponse>, (StatusCode, String)> {
+    // Parse recipient public key
+    let to_bytes = hex::decode(&req.to)
+    .map_err(|_| (StatusCode::BAD_REQUEST, "invalid recipient pubkey".to_string()))?;
+
+    if to_bytes.len() != 32 {
+        return Err((StatusCode::BAD_REQUEST, "public key must be 32 bytes".to_string()));
+    }
+
+    let mut to = [0u8; 32];
+    to.copy_from_slice(&to_bytes);
+
+    // TODO: Get our own public key from keypair
+    let from = [0u8; 32];  // Replace with actual keypair.public
+
+    // Create message
+    let message = MessageChunk::text(from, to, req.text);
+
+    // Serialize to chunk payload
+    let payload = message.to_bytes();
+
+    // Create outgoing chunk with type_tag 4 (message)
+    let chunk = crate::chunk::OutgoingChunk {
+        type_tag: 4,
+        schema_id: KnownSchema::Message.id(),
+        payload: bytes::Bytes::from(payload),
+    };
+
+    // Send to peer
+    let target = crate::send_target::SendTarget::Peer { public_key: to };
+    state.chunk_tx.send((target, chunk))
+    .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "send queue closed".to_string()))?;
+
+    // Store locally
+    state.message_store.add(to, message.clone());
+
+    Ok(Json(SendMessageResponse {
+        msg_id: hex::encode(message.msg_id),
+            timestamp: message.timestamp,
+    }))
+}
+
+
 // ── /trust ────────────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
@@ -263,7 +382,7 @@ async fn handle_trust_list(State(state): State<StatusState>) -> Json<TrustListRe
     let rules = state.trust.list().into_iter().map(|(pubkey, level)| {
         TrustRule {
             public_key: hex::encode(pubkey),
-                level:      format!("{:?}", level),
+            level:      format!("{:?}", level),
         }
     }).collect();
 
@@ -582,6 +701,8 @@ pub async fn serve(state: StatusState, port: u16) -> anyhow::Result<()> {
     .route("/sessions/{id}",     axum::routing::delete(handle_session_drop))
     .route("/sessions/{id}",     get(handle_session_inspect))
     .route("/schema",           get(handle_schema_list))
+    .route("/messages/:peer_pubkey", get(handle_get_messages))
+    .route("/messages/send", post(handle_send_message))
     .with_state(state);
 
 

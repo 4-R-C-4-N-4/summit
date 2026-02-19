@@ -280,6 +280,7 @@ mod tests {
             public_key:      [0x22; 32],
             version:         7,
             session_port:    9000,
+            chunk_port:      9001,
             contract:        Contract::Bulk as u8,
             flags:           0,
         };

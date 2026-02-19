@@ -3,3 +3,6 @@
 
 pub mod wire;
 pub mod crypto;
+pub mod message;
+
+pub use message::{MessageChunk, MessageType, MessageContent};
