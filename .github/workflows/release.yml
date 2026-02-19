@@ -150,35 +150,35 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  release-binaries:
-    name: Build Native Binary
-    runs-on: ubuntu-latest
-    permissions:
-        contents: write
-    steps:
-        - uses: actions/checkout@v4
+    release-binaries:
+        name: Build Native Binary
+        runs-on: ubuntu-latest
+        permissions:
+            contents: write
+        steps:
+            - uses: actions/checkout@v4
 
-        - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+            - name: Install Rust
+            uses: dtolnay/rust-toolchain@stable
 
-        - name: Build binaries
-        run: |
-            cargo build --release -p summitd
-            cargo build --release -p summit-ctl
+            - name: Build binaries
+            run: |
+                cargo build --release -p summitd
+                cargo build --release -p summit-ctl
 
-        - name: Strip binaries
-        run: |
-            strip target/release/summitd
-            strip target/release/summit-ctl
+            - name: Strip binaries
+            run: |
+                strip target/release/summitd
+                strip target/release/summit-ctl
 
-        - name: Create archive
-        run: |
-            cd target/release
-            tar czf ../../summit-x86_64-unknown-linux-gnu.tar.gz summitd summit-ctl
+            - name: Create archive
+            run: |
+                cd target/release
+                tar czf ../../summit-x86_64-unknown-linux-gnu.tar.gz summitd summit-ctl
 
-        - name: Upload to release
-        uses: softprops/action-gh-release@v1
-        with:
-            files: summit-x86_64-unknown-linux-gnu.tar.gz
-        env:
-            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            - name: Upload to release
+            uses: softprops/action-gh-release@v1
+            with:
+                files: summit-x86_64-unknown-linux-gnu.tar.gz
+            env:
+                GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

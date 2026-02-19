@@ -2,10 +2,8 @@ FROM archlinux:latest
 
 # Force mirror refresh and system update
 RUN pacman -Syy --noconfirm && \
-    pacman -Syu --noconfirm
-
-# Core build dependencies + Node.js
-RUN pacman -S --noconfirm \
+    pacman -Syu --noconfirm && \
+    pacman -S --noconfirm \
     base-devel \
     rustup \
     liburing \
@@ -21,7 +19,8 @@ RUN pacman -S --noconfirm \
     vim \
     nodejs \
     npm \
-    jq
+    jq && \
+    pacman -Scc --noconfirm
 
 # Rust stable toolchain
 RUN rustup toolchain install stable && \
@@ -32,6 +31,3 @@ RUN cargo install cbindgen cargo-audit cargo-watch
 
 # Working directory
 WORKDIR /summit
-
-# Mount point for source
-VOLUME ["/summit"]
