@@ -31,6 +31,14 @@ const api = {
   getFiles: () => fetch(`${API_BASE}/files`).then(r => r.json()),
   getCacheStats: () => fetch(`${API_BASE}/cache`).then(r => r.json()),
   getSchemas: () => fetch(`${API_BASE}/schema`).then(r => r.json()),
+  getMessages: (peerPubkey) =>
+  fetch(`${API_BASE}/messages/${peerPubkey}`).then(r => r.json()),
+  sendMessage: (toPubkey, text) =>
+  fetch(`${API_BASE}/messages/send`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ to: toPubkey, text })
+  }).then(r => r.json()),
 };
 
 // ─── Utilities ────────────────────────────────────────────────────────────────

@@ -8,8 +8,7 @@
     "dev": "concurrently \"npm run vite\" \"wait-on http://localhost:5173 && electron .\"",
     "vite": "vite",
     "build": "vite build",
-    "build:electron": "npm run build && electron-builder",
-    "build:all": "npm run build && electron-builder -mwl"
+    "build:electron": "npm run build && electron-builder --linux"
   },
   "keywords": [
     "astral",
@@ -37,14 +36,21 @@
     "appId": "com.astral.ui",
     "productName": "astral",
     "directories": {
-      "output": "dist-electron"
+      "output": "dist-electron",
+      "buildResources": "assets"
     },
     "files": [
       "dist/**/*",
       "main.js",
       "preload.js",
-      "!node_modules/**/*",
-      "node_modules/electron/**/*"
+      "assets/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "dist",
+        "to": "dist",
+        "filter": ["**/*"]
+      }
     ],
     "linux": {
       "target": ["AppImage"],

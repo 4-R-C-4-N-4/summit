@@ -12,6 +12,10 @@ const API_PORT = 9001;
 
 // Create the main window
 function createWindow() {
+  console.log('Creating window...');
+  console.log('__dirname:', __dirname);
+  console.log('app.isPackaged:', app.isPackaged);
+
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -24,16 +28,16 @@ function createWindow() {
     },
     autoHideMenuBar: true,
     icon: path.join(__dirname, 'assets/tray-icon.png'),
-    title: 'Summit Protocol'
+    title: '4str4l',
+    show: false
   });
 
-  // Load the app
-  if (isDev) {
-    mainWindow.loadURL('http://localhost:5173');
-    mainWindow.webContents.openDevTools();
-  } else {
-    mainWindow.loadFile(path.join(__dirname, '/index.html'));
-  }
+
+  // Show window when ready
+  mainWindow.once('ready-to-show', () => {
+    console.log('Window ready to show');
+    mainWindow.show();
+  });
 
   // Handle window close - minimize to tray instead
   mainWindow.on('close', (event) => {
@@ -42,46 +46,83 @@ function createWindow() {
       mainWindow.hide();
     }
   });
+
+  mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
+    console.error('Failed to load:', errorCode, errorDescription);
+  });
+
+
+  mainWindow.webContents.on('did-finish-load', () => {
+    console.log('Finished loading');
+  });
+
+  // In packaged app, files are in resources/
+  // app.asar is separate from other resources
+  let htmlPath;
+  if (app.isPackaged) {
+    // Go up from app.asar to resources, then into dist
+    htmlPath = path.join(process.resourcesPath, 'dist', 'index.html');
+  } else {
+    htmlPath = path.join(__dirname, 'dist', 'index.html');
+  }
+  console.log('Loading from:', htmlPath);
+
+  mainWindow.loadFile(htmlPath).catch(err => {
+    console.error('Load error:', err);
+  });
+
+  /*
+  // Load the app
+  mainWindow.loadURL('http://localhost:5173');
+  if(isDev){
+    mainWindow.webContents.openDevTools();
+  }*/
+
+  mainWindow.webContents.on('console-message', (event, level, message) => {
+    console.log('Console:', message);
+  });
+  mainWindow.webContents.openDevTools();
 }
 
 // Create system tray
 function createTray() {
-  tray = new Tray(path.join(__dirname, 'assets/tray-icon.png'));
-  
-  const contextMenu = Menu.buildFromTemplate([
-    {
-      label: 'Show Summit',
-      click: () => {
-        mainWindow.show();
+  // Try to create tray, but don't crash if icon missing
+  const trayIconPath = path.join(__dirname, 'assets/tray-icon.png');
+
+  // Check if icon exists
+  const fs = require('fs');
+  if (!fs.existsSync(trayIconPath)) {
+    console.warn('Tray icon not found, skipping tray creation');
+    return;
+  }
+
+  try {
+    tray = new Tray(trayIconPath);
+
+    const contextMenu = Menu.buildFromTemplate([
+      {
+        label: 'Show Summit',
+        click: () => mainWindow.show()
+      },
+      { type: 'separator' },
+      {
+        label: 'Quit Summit',
+        click: () => {
+          app.isQuitting = true;
+          app.quit();
+        }
       }
-    },
-    {
-      label: 'Summit Status',
-      click: async () => {
-        const status = await checkDaemonStatus();
-        dialog.showMessageBox({
-          title: 'Summit Status',
-          message: status.running ? 'Summit is running' : 'Summit is not running',
-          detail: status.running ? `Sessions: ${status.sessions}\nPeers: ${status.peers}` : 'Start Summit to see details'
-        });
-      }
-    },
-    { type: 'separator' },
-    {
-      label: 'Quit Summit',
-      click: () => {
-        app.isQuitting = true;
-        app.quit();
-      }
-    }
-  ]);
-  
-  tray.setToolTip('Summit Protocol');
-  tray.setContextMenu(contextMenu);
-  
-  tray.on('click', () => {
-    mainWindow.show();
-  });
+    ]);
+
+    tray.setToolTip('Summit Protocol');
+    tray.setContextMenu(contextMenu);
+
+    tray.on('click', () => {
+      mainWindow.show();
+    });
+  } catch (error) {
+    console.warn('Failed to create tray:', error);
+  }
 }
 
 // Check if summitd is running
@@ -153,6 +194,7 @@ ipcMain.handle('stop-daemon', async () => {
 
 // App lifecycle
 app.whenReady().then(() => {
+  console.log('App ready');
   createWindow();
   createTray();
   
@@ -164,10 +206,7 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => {
-  // On macOS, keep running in background
-  if (process.platform !== 'darwin') {
     app.quit();
-  }
 });
 
 app.on('before-quit', () => {
