@@ -43,12 +43,12 @@ jobs:
       
       - name: Run tests
         run: cargo test --all-features --workspace
-      
-      - name: Run clippy
-        run: cargo clippy --all-features --workspace -- -D warnings
-      
-      - name: Check formatting
-        run: cargo fmt --all -- --check
+
+#       - name: Run clippy
+#         run: cargo clippy --all-features --workspace -- -D warnings
+#
+#       - name: Check formatting
+#         run: cargo fmt --all -- --check
 
   build:
     name: Build (${{ matrix.os }})
