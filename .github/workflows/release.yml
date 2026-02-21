@@ -198,7 +198,7 @@ jobs:
       - name: Build UI
         run: |
           cd zenith
-          npm ci
+          npm i
           npm run build:electron
 
       - name: Find AppImage
