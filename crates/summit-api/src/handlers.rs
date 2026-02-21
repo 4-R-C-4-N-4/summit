@@ -1,36 +1,30 @@
-//! HTTP status endpoint — exposes daemon state as JSON.
+//! HTTP API handlers — exposes daemon state as JSON.
 
 use axum::extract::Path;
 use axum::http::StatusCode;
-use axum::routing::{get, post};
-use axum::{extract::State, Json, Router};
+use axum::{extract::State, Json};
 use serde::{Deserialize, Serialize};
-use tokio::net::TcpListener;
 
-use crate::cache::ChunkCache;
-use crate::capability::PeerRegistry;
-use crate::message_store::MessageStore;
-use crate::schema::KnownSchema;
-use crate::send_target::SendTarget;
-use crate::session::SessionTable;
-use crate::trust::{TrustLevel, TrustRegistry, UntrustedBuffer};
+use summit_services::{
+    ChunkCache, KnownSchema, MessageStore, OutgoingChunk, PeerRegistry, SendTarget, SessionTable,
+    TrustRegistry, UntrustedBuffer,
+};
 
-use axum::body::Body;
-use axum::http::{header, StatusCode as HttpStatusCode};
-use axum::response::{IntoResponse, Response};
+use std::sync::Arc;
+use summit_core::crypto::Keypair;
 use summit_core::message::MessageChunk;
-use tower_http::cors::{Any, CorsLayer};
 
 #[derive(Clone)]
-pub struct StatusState {
+pub struct ApiState {
     pub sessions: SessionTable,
     pub cache: ChunkCache,
     pub registry: PeerRegistry,
-    pub chunk_tx: tokio::sync::mpsc::UnboundedSender<(SendTarget, crate::chunk::OutgoingChunk)>,
-    pub reassembler: std::sync::Arc<crate::transfer::FileReassembler>,
+    pub chunk_tx: tokio::sync::mpsc::UnboundedSender<(SendTarget, OutgoingChunk)>,
+    pub reassembler: Arc<summit_services::FileReassembler>,
     pub trust: TrustRegistry,
     pub untrusted_buffer: UntrustedBuffer,
     pub message_store: MessageStore,
+    pub keypair: Arc<Keypair>,
 }
 
 // ── /status ──────────────────────────────────────────────────────────────────
@@ -59,7 +53,7 @@ pub struct CacheInfo {
     pub bytes: u64,
 }
 
-async fn handle_status(State(state): State<StatusState>) -> Json<StatusResponse> {
+pub async fn handle_status(State(state): State<ApiState>) -> Json<StatusResponse> {
     let sessions = state
         .sessions
         .iter()
@@ -112,7 +106,7 @@ pub struct PeerInfo {
     pub buffered_chunks: usize,
 }
 
-async fn handle_peers(State(state): State<StatusState>) -> Json<PeersResponse> {
+pub async fn handle_peers(State(state): State<ApiState>) -> Json<PeersResponse> {
     let peers = state
         .registry
         .iter()
@@ -141,7 +135,7 @@ async fn handle_peers(State(state): State<StatusState>) -> Json<PeersResponse> {
 
 // ── /cache ────────────────────────────────────────────────────────────────────
 
-async fn handle_cache(State(state): State<StatusState>) -> Json<CacheInfo> {
+pub async fn handle_cache(State(state): State<ApiState>) -> Json<CacheInfo> {
     Json(CacheInfo {
         chunks: state.cache.count(),
         bytes: state.cache.size(),
@@ -155,7 +149,7 @@ pub struct ClearResponse {
     pub cleared: usize,
 }
 
-async fn handle_cache_clear(State(state): State<StatusState>) -> Json<ClearResponse> {
+pub async fn handle_cache_clear(State(state): State<ApiState>) -> Json<ClearResponse> {
     let cleared = state.cache.count();
     state.cache.clear();
     tracing::info!(cleared, "cache cleared via CLI");
@@ -173,12 +167,10 @@ pub struct SendResponse {
     pub chunks_sent: usize,
 }
 
-async fn handle_send(
-    State(state): State<StatusState>,
+pub async fn handle_send(
+    State(state): State<ApiState>,
     mut multipart: Multipart,
-) -> Result<Json<SendResponse>, (axum::http::StatusCode, String)> {
-    use crate::transfer;
-
+) -> Result<Json<SendResponse>, (StatusCode, String)> {
     // Extract file and optional target from multipart
     let mut file_data = Vec::new();
     let mut filename = String::from("uploaded_file");
@@ -187,7 +179,7 @@ async fn handle_send(
     while let Some(field) = multipart
         .next_field()
         .await
-        .map_err(|e| (axum::http::StatusCode::BAD_REQUEST, e.to_string()))?
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
     {
         let field_name = field.name().unwrap_or("").to_string();
 
@@ -195,9 +187,9 @@ async fn handle_send(
             let target_str = field
                 .text()
                 .await
-                .map_err(|e| (axum::http::StatusCode::BAD_REQUEST, e.to_string()))?;
+                .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
             target = serde_json::from_str(&target_str)
-                .map_err(|e| (axum::http::StatusCode::BAD_REQUEST, e.to_string()))?;
+                .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
         } else {
             if let Some(name) = field.file_name() {
                 filename = name.to_string();
@@ -205,26 +197,23 @@ async fn handle_send(
             let data = field
                 .bytes()
                 .await
-                .map_err(|e| (axum::http::StatusCode::BAD_REQUEST, e.to_string()))?;
+                .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
             file_data.extend_from_slice(&data);
         }
     }
 
     if file_data.is_empty() {
-        return Err((
-            axum::http::StatusCode::BAD_REQUEST,
-            "no file data".to_string(),
-        ));
+        return Err((StatusCode::BAD_REQUEST, "no file data".to_string()));
     }
 
     // Write to temp file
     let temp_path = std::env::temp_dir().join(&filename);
     std::fs::write(&temp_path, &file_data)
-        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     // Chunk the file
-    let chunks = transfer::chunk_file(&temp_path)
-        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let chunks = summit_services::chunk_file(&temp_path)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let bytes = file_data.len() as u64;
     let chunks_sent = chunks.len();
@@ -233,7 +222,7 @@ async fn handle_send(
     for chunk in chunks {
         state.chunk_tx.send((target.clone(), chunk)).map_err(|_| {
             (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                StatusCode::INTERNAL_SERVER_ERROR,
                 "send queue closed".to_string(),
             )
         })?;
@@ -262,7 +251,7 @@ pub struct FilesResponse {
     pub in_progress: Vec<String>,
 }
 
-async fn handle_files(State(state): State<StatusState>) -> Json<FilesResponse> {
+pub async fn handle_files(State(state): State<ApiState>) -> Json<FilesResponse> {
     let received_dir = std::path::PathBuf::from("/tmp/summit-received");
     let mut received = Vec::new();
 
@@ -282,8 +271,6 @@ async fn handle_files(State(state): State<StatusState>) -> Json<FilesResponse> {
     })
 }
 
-// ── /message ────────────────────────────────────────────────────────────────────
-
 // ── /messages/{peer_pubkey} (GET) ─────────────────────────────────────────────
 
 #[derive(Serialize)]
@@ -302,8 +289,8 @@ pub struct MessageJson {
     pub content: serde_json::Value,
 }
 
-async fn handle_get_messages(
-    State(state): State<StatusState>,
+pub async fn handle_get_messages(
+    State(state): State<ApiState>,
     Path(peer_pubkey): Path<String>,
 ) -> Result<Json<MessagesResponse>, (StatusCode, String)> {
     let pubkey_bytes = hex::decode(&peer_pubkey)
@@ -353,8 +340,8 @@ pub struct SendMessageResponse {
     pub timestamp: u64,
 }
 
-async fn handle_send_message(
-    State(state): State<StatusState>,
+pub async fn handle_send_message(
+    State(state): State<ApiState>,
     Json(req): Json<SendMessageRequest>,
 ) -> Result<Json<SendMessageResponse>, (StatusCode, String)> {
     // Parse recipient public key
@@ -375,8 +362,8 @@ async fn handle_send_message(
     let mut to = [0u8; 32];
     to.copy_from_slice(&to_bytes);
 
-    // TODO: Get our own public key from keypair
-    let from = [0u8; 32]; // Replace with actual keypair.public
+    // Use actual keypair public key
+    let from = state.keypair.public;
 
     // Create message
     let message = MessageChunk::text(from, to, req.text);
@@ -385,14 +372,14 @@ async fn handle_send_message(
     let payload = message.to_bytes();
 
     // Create outgoing chunk with type_tag 4 (message)
-    let chunk = crate::chunk::OutgoingChunk {
+    let chunk = OutgoingChunk {
         type_tag: 4,
         schema_id: KnownSchema::Message.id(),
         payload: bytes::Bytes::from(payload),
     };
 
     // Send to peer
-    let target = crate::send_target::SendTarget::Peer { public_key: to };
+    let target = SendTarget::Peer { public_key: to };
     state.chunk_tx.send((target, chunk)).map_err(|_| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -422,7 +409,7 @@ pub struct TrustRule {
     pub level: String,
 }
 
-async fn handle_trust_list(State(state): State<StatusState>) -> Json<TrustListResponse> {
+pub async fn handle_trust_list(State(state): State<ApiState>) -> Json<TrustListResponse> {
     let rules = state
         .trust
         .list()
@@ -447,20 +434,16 @@ pub struct TrustAddResponse {
     pub flushed_chunks: usize,
 }
 
-async fn handle_trust_add(
-    State(state): State<StatusState>,
+pub async fn handle_trust_add(
+    State(state): State<ApiState>,
     Json(req): Json<TrustAddRequest>,
-) -> Result<Json<TrustAddResponse>, (axum::http::StatusCode, String)> {
-    let pubkey_bytes = hex::decode(&req.public_key).map_err(|_| {
-        (
-            axum::http::StatusCode::BAD_REQUEST,
-            "invalid hex".to_string(),
-        )
-    })?;
+) -> Result<Json<TrustAddResponse>, (StatusCode, String)> {
+    let pubkey_bytes = hex::decode(&req.public_key)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid hex".to_string()))?;
 
     if pubkey_bytes.len() != 32 {
         return Err((
-            axum::http::StatusCode::BAD_REQUEST,
+            StatusCode::BAD_REQUEST,
             "public key must be 32 bytes".to_string(),
         ));
     }
@@ -474,8 +457,6 @@ async fn handle_trust_add(
     // Flush buffered chunks
     let buffered = state.untrusted_buffer.flush(&pubkey);
     let flushed_chunks = buffered.len();
-
-    // TODO: Process flushed chunks through reassembler
 
     Ok(Json(TrustAddResponse {
         public_key: req.public_key,
@@ -493,20 +474,16 @@ pub struct TrustBlockResponse {
     pub public_key: String,
 }
 
-async fn handle_trust_block(
-    State(state): State<StatusState>,
+pub async fn handle_trust_block(
+    State(state): State<ApiState>,
     Json(req): Json<TrustBlockRequest>,
-) -> Result<Json<TrustBlockResponse>, (axum::http::StatusCode, String)> {
-    let pubkey_bytes = hex::decode(&req.public_key).map_err(|_| {
-        (
-            axum::http::StatusCode::BAD_REQUEST,
-            "invalid hex".to_string(),
-        )
-    })?;
+) -> Result<Json<TrustBlockResponse>, (StatusCode, String)> {
+    let pubkey_bytes = hex::decode(&req.public_key)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid hex".to_string()))?;
 
     if pubkey_bytes.len() != 32 {
         return Err((
-            axum::http::StatusCode::BAD_REQUEST,
+            StatusCode::BAD_REQUEST,
             "public key must be 32 bytes".to_string(),
         ));
     }
@@ -533,7 +510,7 @@ pub struct PendingPeer {
     pub buffered_chunks: usize,
 }
 
-async fn handle_trust_pending(State(state): State<StatusState>) -> Json<TrustPendingResponse> {
+pub async fn handle_trust_pending(State(state): State<ApiState>) -> Json<TrustPendingResponse> {
     let peers = state
         .untrusted_buffer
         .peers()
@@ -554,7 +531,7 @@ pub struct ShutdownResponse {
     pub message: String,
 }
 
-async fn handle_shutdown() -> Json<ShutdownResponse> {
+pub async fn handle_shutdown() -> Json<ShutdownResponse> {
     tracing::info!("shutdown requested via API");
 
     // Spawn a task to exit after responding
@@ -576,8 +553,8 @@ pub struct SessionDropResponse {
     pub dropped: bool,
 }
 
-async fn handle_session_drop(
-    State(state): State<StatusState>,
+pub async fn handle_session_drop(
+    State(state): State<ApiState>,
     Path(session_id): Path<String>,
 ) -> Result<Json<SessionDropResponse>, (StatusCode, String)> {
     let id_bytes = hex::decode(&session_id)
@@ -618,8 +595,8 @@ pub struct SessionInspectResponse {
     pub trust_level: String,
 }
 
-async fn handle_session_inspect(
-    State(state): State<StatusState>,
+pub async fn handle_session_inspect(
+    State(state): State<ApiState>,
     Path(session_id): Path<String>,
 ) -> Result<Json<SessionInspectResponse>, (StatusCode, String)> {
     let id_bytes = hex::decode(&session_id)
@@ -668,7 +645,7 @@ pub struct SchemaInfoItem {
     pub type_tag: u8,
 }
 
-async fn handle_schema_list() -> Json<SchemaListResponse> {
+pub async fn handle_schema_list() -> Json<SchemaListResponse> {
     let schemas = vec![
         SchemaInfoItem {
             id: hex::encode(KnownSchema::TestPing.id()),
@@ -688,42 +665,4 @@ async fn handle_schema_list() -> Json<SchemaListResponse> {
     ];
 
     Json(SchemaListResponse { schemas })
-}
-
-// ── Router ────────────────────────────────────────────────────────────────────
-
-pub async fn serve(state: StatusState, port: u16) -> anyhow::Result<()> {
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
-    // for prod:
-    //.allow_origin("http://localhost:{the-app-port}".parse::<HeaderValue>().unwrap())
-
-    let api_routes = Router::new()
-        .route("/status", get(handle_status))
-        .route("/peers", get(handle_peers))
-        .route("/cache", get(handle_cache))
-        .route("/cache/clear", post(handle_cache_clear))
-        .route("/send", post(handle_send))
-        .route("/files", get(handle_files))
-        .route("/trust", get(handle_trust_list))
-        .route("/trust/add", post(handle_trust_add))
-        .route("/trust/block", post(handle_trust_block))
-        .route("/trust/pending", get(handle_trust_pending))
-        .route("/daemon/shutdown", post(handle_shutdown))
-        .route("/sessions/{id}", axum::routing::delete(handle_session_drop))
-        .route("/sessions/{id}", get(handle_session_inspect))
-        .route("/schema", get(handle_schema_list))
-        .route("/messages/{peer_pubkey}", get(handle_get_messages))
-        .route("/messages/send", post(handle_send_message))
-        .with_state(state);
-
-    // Combine API and static files
-    let app = Router::new().nest("/api", api_routes).layer(cors);
-
-    let listener = TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
-    tracing::info!(port, "status endpoint listening");
-    axum::serve(listener, app).await?;
-    Ok(())
 }

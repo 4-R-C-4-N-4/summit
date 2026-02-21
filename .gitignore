@@ -25,8 +25,8 @@ target
 
 /target
 
-astral/dist-electron/
-astral/node_modules/
+zenith/dist-electron/
+zenith/node_modules/
 
 .DS_Store
 .env

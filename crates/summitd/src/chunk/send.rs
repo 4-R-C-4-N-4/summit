@@ -10,17 +10,16 @@ use zerocopy::AsBytes;
 
 use summit_core::crypto::{hash, Session};
 use summit_core::wire::{ChunkHeader, CHUNK_VERSION};
+use summit_services::ChunkCache;
 
 use super::OutgoingChunk;
-
-use crate::cache::ChunkCache;
 
 pub async fn send_chunk(
     socket: Arc<UdpSocket>,
     peer_addr: SocketAddr,
     session: Arc<Mutex<Session>>,
     chunk: OutgoingChunk,
-    cache: ChunkCache, // NEW
+    cache: ChunkCache,
 ) -> Result<()> {
     let content_hash = hash(&chunk.payload);
 

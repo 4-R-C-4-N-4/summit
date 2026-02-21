@@ -9,6 +9,7 @@ use tokio::time::Instant;
 #[derive(Clone)]
 pub struct DeliveryTracker {
     // content_hash -> Vec<(peer_addr, received_at)>
+    #[allow(clippy::type_complexity)]
     deliveries: Arc<DashMap<[u8; 32], Vec<(String, Instant)>>>,
 }
 
@@ -23,11 +24,12 @@ impl DeliveryTracker {
     pub fn record(&self, content_hash: [u8; 32], peer_addr: String) {
         self.deliveries
             .entry(content_hash)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push((peer_addr, Instant::now()));
     }
 
     /// Get all deliveries for a chunk.
+    #[allow(dead_code)]
     pub fn get(&self, content_hash: &[u8; 32]) -> Option<Vec<(String, Instant)>> {
         self.deliveries.get(content_hash).map(|v| v.clone())
     }

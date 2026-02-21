@@ -13,8 +13,7 @@ use tokio::net::UdpSocket;
 use zerocopy::FromBytes;
 
 use summit_core::wire::{CapabilityAnnouncement, MULTICAST_ADDR, PEER_TTL_SECS};
-
-use super::{PeerEntry, PeerRegistry};
+use summit_services::{PeerEntry, PeerRegistry};
 
 /// UDP port on which capability announcements are received.
 pub const ANNOUNCE_PORT: u16 = 9000;
@@ -32,7 +31,7 @@ pub async fn listener_loop(
 
     // Convert to tokio UdpSocket for async recv
     let socket =
-        UdpSocket::from_std(socket.into()).context("failed to convert to tokio UdpSocket")?;
+        UdpSocket::from_std(socket).context("failed to convert to tokio UdpSocket")?;
 
     let mut buf = vec![0u8; 1024];
 
@@ -69,7 +68,7 @@ pub async fn listener_loop(
                 let session_port = announcement.session_port; // copy to avoid alignment issue
 
                 tracing::debug!(
-                    capability = hex::encode(&cap_hash),
+                    capability = hex::encode(cap_hash),
                                 addr = %peer_addr,
                                 port = session_port,  // use local copy
                                 "peer discovered"

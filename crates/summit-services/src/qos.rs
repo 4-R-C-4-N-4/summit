@@ -68,3 +68,45 @@ impl TokenBucket {
         self.tokens.min(self.capacity)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn realtime_always_allows() {
+        let mut bucket = TokenBucket::new(Contract::Realtime);
+        for _ in 0..1000 {
+            assert!(bucket.allow());
+        }
+    }
+
+    #[test]
+    fn bulk_rate_limiting_depletes_tokens() {
+        let mut bucket = TokenBucket::new(Contract::Bulk);
+        // Bulk starts with BULK_BURST (32) tokens
+        let mut allowed = 0;
+        for _ in 0..100 {
+            if bucket.allow() {
+                allowed += 1;
+            }
+        }
+        // Should allow ~32 then start dropping (no time passes for refill)
+        assert!(allowed >= 32);
+        assert!(allowed < 40); // small margin for float precision + tiny elapsed time
+    }
+
+    #[test]
+    fn background_rate_limiting_depletes_tokens() {
+        let mut bucket = TokenBucket::new(Contract::Background);
+        // Background starts with BG_BURST (4) tokens
+        let mut allowed = 0;
+        for _ in 0..20 {
+            if bucket.allow() {
+                allowed += 1;
+            }
+        }
+        assert!(allowed >= 4);
+        assert!(allowed < 8);
+    }
+}

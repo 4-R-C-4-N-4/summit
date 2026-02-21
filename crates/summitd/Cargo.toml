@@ -5,6 +5,8 @@ edition = "2021"
 
 [dependencies]
 summit-core = { path = "../summit-core" }
+summit-services = { path = "../summit-services" }
+summit-api = { path = "../summit-api" }
 tokio       = { version = "1", features = ["full"] }
 tokio-uring = "0.4"
 bytes       = "1"
@@ -20,12 +22,9 @@ hex         = "0.4"
 memmap2     = "0.9"
 futures = "0.3"
 nix = { version = "0.31.1", features = ["net"] }
-axum = { version = "0.8.8", features = ["multipart"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 rust-embed = { version = "8.5", optional = true }
 mime_guess = { version = "2.0", optional = true }
-tower-http = { version = "0.6.8", features = ["cors"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 blake3 = "1.5"
-

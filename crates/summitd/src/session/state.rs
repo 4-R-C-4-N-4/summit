@@ -40,6 +40,7 @@ pub struct ResponderState {
 pub struct InitiatorWaiting {
     pub session: Session,
     pub chunk_socket: Arc<UdpSocket>,
+    #[allow(dead_code)]
     pub chunk_socket_port: u16,
     pub peer_pubkey: [u8; 32],
 }

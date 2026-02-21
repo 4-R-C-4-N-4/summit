@@ -887,7 +887,7 @@ export default function App() {
       }}>
       <div>
       <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 16, fontWeight: 700, color: "#f5a623", letterSpacing: "0.05em" }}>
-      ASTRAL
+      ZENITH
       </div>
       <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 8, color: "rgba(255,255,255,0.25)", letterSpacing: "0.15em", marginTop: 1 }}>
       SUMMIT PROTOCOL · PROXIMAL MESH

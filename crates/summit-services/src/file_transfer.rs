@@ -7,9 +7,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use crate::chunk::OutgoingChunk;
+use crate::chunk_types::OutgoingChunk;
 use crate::schema::KnownSchema;
-use summit_core::crypto::hash;
 
 /// Maximum chunk payload size (before encryption overhead)
 pub const MAX_CHUNK_SIZE: usize = 32 * 1024; // 32KB
@@ -38,7 +37,7 @@ pub fn chunk_file(path: &std::path::Path) -> Result<Vec<OutgoingChunk>> {
 
     // Split file into data chunks
     for chunk_data in data.chunks(MAX_CHUNK_SIZE) {
-        let content_hash = hash(chunk_data);
+        let content_hash = summit_core::crypto::hash(chunk_data);
         chunk_hashes.push(content_hash);
 
         chunks.push(OutgoingChunk {
@@ -151,5 +150,68 @@ impl FileReassembler {
     /// List files currently being received
     pub async fn in_progress(&self) -> Vec<String> {
         self.active.lock().await.keys().cloned().collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chunk_file_produces_metadata_and_data_chunks() {
+        let dir = std::env::temp_dir().join(format!("summit-ft-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file_path = dir.join("test.txt");
+        std::fs::write(&file_path, b"hello world").unwrap();
+
+        let chunks = chunk_file(&file_path).unwrap();
+        // 1 metadata chunk + 1 data chunk (file < MAX_CHUNK_SIZE)
+        assert_eq!(chunks.len(), 2);
+        // First chunk is metadata (type_tag 3)
+        assert_eq!(chunks[0].type_tag, 3);
+        // Second chunk is data (type_tag 2)
+        assert_eq!(chunks[1].type_tag, 2);
+
+        // Metadata deserializes correctly
+        let meta: FileMetadata = serde_json::from_slice(&chunks[0].payload).unwrap();
+        assert_eq!(meta.filename, "test.txt");
+        assert_eq!(meta.total_bytes, 11);
+        assert_eq!(meta.chunk_hashes.len(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn reassembler_completes_file() {
+        let dir = std::env::temp_dir().join(format!("summit-reasm-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let reassembler = FileReassembler::new(dir.clone());
+
+        let data = b"reassembly test data";
+        let hash = summit_core::crypto::hash(data);
+
+        let metadata = FileMetadata {
+            filename: "out.txt".into(),
+            total_bytes: data.len() as u64,
+            chunk_hashes: vec![hash],
+        };
+
+        reassembler.add_metadata(metadata).await;
+        assert_eq!(reassembler.in_progress().await.len(), 1);
+
+        let result = reassembler
+            .add_chunk(hash, Bytes::from_static(data))
+            .await
+            .unwrap();
+        assert!(result.is_some());
+
+        let output_path = result.unwrap();
+        assert_eq!(std::fs::read(&output_path).unwrap(), data);
+
+        // After completion, no longer in progress
+        assert!(reassembler.in_progress().await.is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -3,10 +3,11 @@
 use serde::{Deserialize, Serialize};
 
 /// Target for chunk sending.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum SendTarget {
     /// Broadcast to all trusted sessions.
+    #[default]
     Broadcast,
 
     /// Send to specific peer by public key.
@@ -24,9 +25,40 @@ pub enum SendTarget {
     },
 }
 
-impl Default for SendTarget {
-    fn default() -> Self {
-        Self::Broadcast
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn serde_roundtrip_broadcast() {
+        let target = SendTarget::Broadcast;
+        let json = serde_json::to_string(&target).unwrap();
+        let back: SendTarget = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, SendTarget::Broadcast));
+    }
+
+    #[test]
+    fn serde_roundtrip_peer() {
+        let key = [0xabu8; 32];
+        let target = SendTarget::Peer { public_key: key };
+        let json = serde_json::to_string(&target).unwrap();
+        let back: SendTarget = serde_json::from_str(&json).unwrap();
+        match back {
+            SendTarget::Peer { public_key } => assert_eq!(public_key, key),
+            _ => panic!("expected Peer variant"),
+        }
+    }
+
+    #[test]
+    fn serde_roundtrip_session() {
+        let id = [0xcdu8; 32];
+        let target = SendTarget::Session { session_id: id };
+        let json = serde_json::to_string(&target).unwrap();
+        let back: SendTarget = serde_json::from_str(&json).unwrap();
+        match back {
+            SendTarget::Session { session_id } => assert_eq!(session_id, id),
+            _ => panic!("expected Session variant"),
+        }
     }
 }
 

@@ -1,9 +1,8 @@
 //! Schema validation — ensures chunks conform to expected types.
-//!
-//! For Zenith, schemas are hard-coded Rust validators. A production
-//! system would use WASM to allow dynamic schema loading.
 
 use anyhow::{bail, Context, Result};
+
+use crate::file_transfer::FileMetadata;
 
 /// Known schema IDs (precomputed BLAKE3 hashes of schema names).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,7 +17,6 @@ pub enum KnownSchema {
 
 impl KnownSchema {
     pub fn from_id(schema_id: &[u8; 32]) -> Option<Self> {
-        // Precomputed at build time
         let test_ping_id = summit_core::crypto::hash(b"summit.test.ping");
         let file_chunk_id = summit_core::crypto::hash(b"summit.file.chunk");
         let message_id = summit_core::crypto::hash(b"summit.message");
@@ -34,15 +32,6 @@ impl KnownSchema {
         }
     }
 
-    // pub fn type_tag(&self) -> Option<u8> {
-    //     match self {
-    //         Self::TestPing => Some(1),
-    //         Self::FileData => Some(2),
-    //         Self::FileMetadata => Some(3),
-    //         Self::Message => Some(4),
-    //     }
-    // }
-
     /// Validate a chunk payload against this schema.
     pub fn validate(&self, payload: &[u8]) -> Result<()> {
         match self {
@@ -56,13 +45,10 @@ impl KnownSchema {
                 Ok(())
             }
 
-            Self::FileChunk => {
-                // No validation — arbitrary bytes allowed
-                Ok(())
-            }
+            Self::FileChunk => Ok(()),
             Self::FileData => Ok(()),
             Self::FileMetadata => {
-                serde_json::from_slice::<crate::transfer::FileMetadata>(payload)
+                serde_json::from_slice::<FileMetadata>(payload)
                     .context("invalid file metadata JSON")?;
                 Ok(())
             }
@@ -92,27 +78,23 @@ impl KnownSchema {
         }
     }
 
+    #[allow(clippy::type_complexity)]
     pub fn validator(&self) -> Option<Box<dyn Fn(&[u8]) -> bool + Send + Sync>> {
         match self {
             Self::TestPing => Some(Box::new(validate_test_ping)),
             Self::FileMetadata => Some(Box::new(validate_file_metadata)),
-            Self::FileChunk | Self::FileData => None, // raw bytes, no validation needed
+            Self::FileChunk | Self::FileData => None,
             Self::Message => None,
         }
     }
-
-    fn validate_file_metadata(payload: &[u8]) -> bool {
-        serde_json::from_slice::<crate::transfer::FileMetadata>(payload).is_ok()
-    }
 }
-// ── Validation functions ──────────────────────────────────────────────────────
 
 fn validate_test_ping(payload: &[u8]) -> bool {
     std::str::from_utf8(payload).is_ok()
 }
 
 fn validate_file_metadata(payload: &[u8]) -> bool {
-    serde_json::from_slice::<crate::transfer::FileMetadata>(payload).is_ok()
+    serde_json::from_slice::<FileMetadata>(payload).is_ok()
 }
 
 #[cfg(test)]

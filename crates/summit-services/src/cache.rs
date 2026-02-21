@@ -86,7 +86,7 @@ impl ChunkCache {
             let mut file = fs::File::create(&tmp_path)
                 .with_context(|| format!("failed to create temp file: {}", tmp_path.display()))?;
             file.write_all(data)
-                .with_context(|| format!("failed to write chunk data"))?;
+                .context("failed to write chunk data")?;
             file.sync_all().context("failed to sync chunk to disk")?;
         }
 
@@ -145,5 +145,105 @@ impl ChunkCache {
                 let _ = std::fs::remove_dir_all(entry.path());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn temp_cache() -> ChunkCache {
+        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("summit-cache-test-{}-{}", std::process::id(), id));
+        let _ = std::fs::remove_dir_all(&dir);
+        ChunkCache::new(&dir).unwrap()
+    }
+
+    #[test]
+    fn new_creates_directory() {
+        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("summit-cache-new-{}-{}", std::process::id(), id));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(!dir.exists());
+
+        let _cache = ChunkCache::new(&dir).unwrap();
+        assert!(dir.exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn put_and_get_roundtrip() {
+        let cache = temp_cache();
+        let data = b"hello world";
+        let hash = summit_core::crypto::hash(data);
+
+        cache.put(&hash, data).unwrap();
+        let retrieved = cache.get(&hash).unwrap().unwrap();
+        assert_eq!(&retrieved[..], data);
+
+        cache.clear();
+    }
+
+    #[test]
+    fn has_returns_correct_bool() {
+        let cache = temp_cache();
+        let data = b"test data";
+        let hash = summit_core::crypto::hash(data);
+
+        assert!(!cache.has(&hash));
+        cache.put(&hash, data).unwrap();
+        assert!(cache.has(&hash));
+
+        cache.clear();
+    }
+
+    #[test]
+    fn put_is_idempotent() {
+        let cache = temp_cache();
+        let data = b"idempotent";
+        let hash = summit_core::crypto::hash(data);
+
+        cache.put(&hash, data).unwrap();
+        cache.put(&hash, data).unwrap();
+        assert_eq!(cache.count(), 1);
+
+        cache.clear();
+    }
+
+    #[test]
+    fn count_and_size() {
+        let cache = temp_cache();
+        assert_eq!(cache.count(), 0);
+        assert_eq!(cache.size(), 0);
+
+        let data1 = b"chunk one";
+        let data2 = b"chunk two!!";
+        cache.put(&summit_core::crypto::hash(data1), data1).unwrap();
+        cache.put(&summit_core::crypto::hash(data2), data2).unwrap();
+
+        assert_eq!(cache.count(), 2);
+        assert_eq!(cache.size(), (data1.len() + data2.len()) as u64);
+
+        cache.clear();
+    }
+
+    #[test]
+    fn clear_wipes_cache() {
+        let cache = temp_cache();
+        let data = b"will be cleared";
+        let hash = summit_core::crypto::hash(data);
+
+        cache.put(&hash, data).unwrap();
+        assert_eq!(cache.count(), 1);
+
+        cache.clear();
+        assert_eq!(cache.count(), 0);
+        assert!(!cache.has(&hash));
     }
 }

@@ -1891,6 +1891,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
+name = "summit-api"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "bytes",
+ "hex",
+ "serde",
+ "serde_json",
+ "summit-core",
+ "summit-services",
+ "tokio",
+ "tower-http",
+ "tracing",
+]
+
+[[package]]
 name = "summit-core"
 version = "0.1.0"
 dependencies = [
@@ -1918,11 +1935,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "summit-services"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "dashmap",
+ "hex",
+ "memmap2",
+ "serde",
+ "serde_json",
+ "summit-core",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "summitd"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "axum",
  "blake3",
  "bytes",
  "dashmap",
@@ -1937,11 +1969,12 @@ dependencies = [
  "serde",
  "serde_json",
  "socket2 0.5.10",
+ "summit-api",
  "summit-core",
+ "summit-services",
  "thiserror 1.0.69",
  "tokio",
  "tokio-uring",
- "tower-http",
  "tracing",
  "tracing-subscriber",
  "zerocopy 0.7.35",

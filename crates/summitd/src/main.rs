@@ -11,28 +11,18 @@ use zerocopy::AsBytes;
 use summit_core::crypto::Keypair;
 use summit_core::wire::Contract;
 
-mod cache;
+use summit_services::{
+    new_registry, new_session_table, ActiveSession, ChunkCache, FileReassembler, MessageStore,
+    SendTarget, SessionMeta, TokenBucket, TrustLevel, TrustRegistry, UntrustedBuffer,
+};
+
 mod capability;
 mod chunk;
 mod delivery;
-mod message_store;
-mod qos;
-mod schema;
-mod send_target;
 mod session;
-mod status;
-mod transfer;
-mod trust;
 
-use cache::ChunkCache;
-use capability::{broadcast, listener, new_registry};
-use message_store::MessageStore;
-use send_target::SendTarget;
-use session::{new_session_table, ActiveSession, SessionMeta};
-use status::StatusState;
+use capability::{broadcast, listener};
 use tokio::sync::mpsc;
-use transfer::FileReassembler;
-use trust::{TrustLevel, TrustRegistry, UntrustedBuffer};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -373,7 +363,7 @@ async fn main() -> Result<()> {
                                     },
                                     crypto: Arc::new(Mutex::new(state.session)),
                                     socket: state.chunk_socket,
-                                    bucket: Mutex::new(qos::TokenBucket::new(Contract::Bulk)),
+                                    bucket: Mutex::new(TokenBucket::new(Contract::Bulk)),
                                 });
 
                                 tracing::info!(
@@ -419,7 +409,7 @@ async fn main() -> Result<()> {
                                     },
                                     crypto: Arc::new(Mutex::new(state.session)),
                                     socket: state.chunk_socket,
-                                    bucket: Mutex::new(qos::TokenBucket::new(Contract::Bulk)),
+                                    bucket: Mutex::new(TokenBucket::new(Contract::Bulk)),
                                 });
 
                                 tracing::info!(
@@ -678,7 +668,7 @@ async fn main() -> Result<()> {
                                 // Handle file metadata chunks (type_tag 3)
                                 if chunk.type_tag == 3 {
                                     if let Ok(metadata) =
-                                        serde_json::from_slice::<transfer::FileMetadata>(
+                                        serde_json::from_slice::<summit_services::FileMetadata>(
                                             &chunk.payload,
                                         )
                                     {
@@ -850,8 +840,8 @@ async fn main() -> Result<()> {
 
     // Status HTTP endpoint
     let status_port = 9001u16;
-    let status_server = {
-        let state = StatusState {
+    let _status_server = {
+        let state = summit_api::ApiState {
             sessions: sessions.clone(),
             cache: cache.clone(),
             registry: registry.clone(),
@@ -860,9 +850,10 @@ async fn main() -> Result<()> {
             trust: trust_registry.clone(),
             untrusted_buffer: untrusted_buffer.clone(),
             message_store: message_store.clone(),
+            keypair: keypair.clone(),
         };
         tokio::spawn(async move {
-            if let Err(e) = status::serve(state, status_port).await {
+            if let Err(e) = summit_api::serve(state, status_port).await {
                 tracing::error!(error = %e, "status server failed");
             }
         })

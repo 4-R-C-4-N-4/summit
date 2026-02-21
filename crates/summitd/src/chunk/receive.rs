@@ -8,20 +8,19 @@ use zerocopy::FromBytes;
 
 use summit_core::crypto::{hash, Session};
 use summit_core::wire::ChunkHeader;
-
-use crate::cache::ChunkCache;
-use crate::delivery::DeliveryTracker;
-use crate::schema::KnownSchema;
+use summit_services::{ChunkCache, KnownSchema};
 
 use super::IncomingChunk;
+
+use crate::delivery::DeliveryTracker;
 
 pub async fn receive_loop(
     socket: Arc<UdpSocket>,
     session: Arc<Mutex<Session>>,
     chunk_tx: mpsc::Sender<IncomingChunk>,
     cache: ChunkCache,
-    tracker: DeliveryTracker, // NEW
-    peer_addr: String,        // NEW
+    tracker: DeliveryTracker,
+    peer_addr: String,
 ) -> Result<()> {
     let mut buf = vec![0u8; 65536 + 1024];
 
@@ -101,8 +100,8 @@ pub async fn receive_loop(
                        type_tag = incoming.type_tag,
                        payload_len = incoming.payload.len(),
                        cached = true,
-                       delivery_count,  // NEW
-                       peer = %peer_addr,  // NEW
+                       delivery_count,
+                       peer = %peer_addr,
                        "chunk received"
         );
 

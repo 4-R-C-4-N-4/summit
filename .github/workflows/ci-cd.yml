@@ -32,6 +32,20 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace -- -D warnings
+
+      - name: Build all crates
+        run: |
+          cargo build -p summit-core
+          cargo build -p summit-services
+          cargo build -p summit-api
+          cargo build -p summitd
+          cargo build -p summit-ctl
+
       - name: Run tests
         run: cargo test --workspace --lib
 

@@ -3,6 +3,8 @@
 members = [
     "crates/summitd",
     "crates/summit-core",
+    "crates/summit-services",
+    "crates/summit-api",
     "crates/libsummit",
     "crates/summit-ctl",
     "tests/integration",

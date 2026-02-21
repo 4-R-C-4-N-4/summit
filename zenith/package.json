@@ -1,5 +1,5 @@
 {
-  "name": "astral",
+  "name": "zenith",
   "version": "0.1.0",
   "description": "Desktop UI for Summit Protocol",
   "main": "main.js",
@@ -12,6 +12,7 @@
   },
   "keywords": [
     "astral",
+    "zenith"
     "summit",
     "p2p",
     "mesh",
@@ -33,8 +34,8 @@
     "react-dom": "^18.2.0"
   },
   "build": {
-    "appId": "com.astral.ui",
-    "productName": "astral",
+    "appId": "com.zenith.ui",
+    "productName": "zenith",
     "directories": {
       "output": "dist-electron",
       "buildResources": "assets"

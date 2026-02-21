@@ -12,30 +12,30 @@
 use bytes::Bytes;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Trust level for a peer, keyed by their public key.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TrustLevel {
     /// Peer is blocked — drop sessions, reject all chunks
     Blocked,
     /// Peer is unknown — sessions allowed, chunks buffered
+    #[default]
     Untrusted,
     /// Peer is trusted — full access, process chunks
     Trusted,
 }
 
-impl Default for TrustLevel {
-    fn default() -> Self {
-        Self::Untrusted
-    }
-}
-
 /// Registry of trusted/blocked peers.
 pub struct TrustRegistry {
     rules: Arc<DashMap<[u8; 32], TrustLevel>>,
+}
+
+impl Default for TrustRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TrustRegistry {
@@ -104,10 +104,19 @@ impl Clone for TrustRegistry {
     }
 }
 
+/// A buffered chunk: (content_hash, chunk_data).
+type BufferedChunk = ([u8; 32], Bytes);
+
 /// Buffer for chunks from untrusted peers.
 pub struct UntrustedBuffer {
-    /// Map: peer_pubkey -> Vec<(content_hash, chunk_data)>
-    buffer: Arc<DashMap<[u8; 32], Vec<([u8; 32], Bytes)>>>,
+    /// Map: peer_pubkey -> Vec<BufferedChunk>
+    buffer: Arc<DashMap<[u8; 32], Vec<BufferedChunk>>>,
+}
+
+impl Default for UntrustedBuffer {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl UntrustedBuffer {
@@ -121,7 +130,7 @@ impl UntrustedBuffer {
     pub fn add(&self, peer_pubkey: [u8; 32], content_hash: [u8; 32], data: Bytes) {
         self.buffer
             .entry(peer_pubkey)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push((content_hash, data));
     }
 
@@ -165,5 +174,103 @@ impl Clone for UntrustedBuffer {
         Self {
             buffer: self.buffer.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_trust_level_is_untrusted() {
+        assert_eq!(TrustLevel::default(), TrustLevel::Untrusted);
+    }
+
+    #[test]
+    fn trust_block_check_roundtrip() {
+        let reg = TrustRegistry::new();
+        let peer = [1u8; 32];
+
+        assert_eq!(reg.check(&peer), TrustLevel::Untrusted);
+
+        reg.trust(peer);
+        assert_eq!(reg.check(&peer), TrustLevel::Trusted);
+
+        reg.block(peer);
+        assert_eq!(reg.check(&peer), TrustLevel::Blocked);
+    }
+
+    #[test]
+    fn remove_reverts_to_untrusted() {
+        let reg = TrustRegistry::new();
+        let peer = [1u8; 32];
+
+        reg.trust(peer);
+        assert_eq!(reg.check(&peer), TrustLevel::Trusted);
+
+        reg.remove(&peer);
+        assert_eq!(reg.check(&peer), TrustLevel::Untrusted);
+    }
+
+    #[test]
+    fn list_and_counts() {
+        let reg = TrustRegistry::new();
+        reg.trust([1u8; 32]);
+        reg.trust([2u8; 32]);
+        reg.block([3u8; 32]);
+
+        let list = reg.list();
+        assert_eq!(list.len(), 3);
+
+        let (trusted, untrusted, blocked) = reg.counts();
+        assert_eq!(trusted, 2);
+        assert_eq!(untrusted, 0);
+        assert_eq!(blocked, 1);
+    }
+
+    #[test]
+    fn untrusted_buffer_add_and_flush() {
+        let buf = UntrustedBuffer::new();
+        let peer = [1u8; 32];
+        let hash = [2u8; 32];
+
+        buf.add(peer, hash, Bytes::from_static(b"data"));
+        assert_eq!(buf.count(&peer), 1);
+
+        let flushed = buf.flush(&peer);
+        assert_eq!(flushed.len(), 1);
+        assert_eq!(flushed[0].0, hash);
+        assert_eq!(flushed[0].1, Bytes::from_static(b"data"));
+
+        // After flush, count should be 0
+        assert_eq!(buf.count(&peer), 0);
+    }
+
+    #[test]
+    fn untrusted_buffer_total_and_peers() {
+        let buf = UntrustedBuffer::new();
+        let peer_a = [1u8; 32];
+        let peer_b = [2u8; 32];
+
+        buf.add(peer_a, [10u8; 32], Bytes::from_static(b"a1"));
+        buf.add(peer_a, [11u8; 32], Bytes::from_static(b"a2"));
+        buf.add(peer_b, [20u8; 32], Bytes::from_static(b"b1"));
+
+        assert_eq!(buf.total(), 3);
+
+        let peers = buf.peers();
+        assert_eq!(peers.len(), 2);
+    }
+
+    #[test]
+    fn untrusted_buffer_clear() {
+        let buf = UntrustedBuffer::new();
+        let peer = [1u8; 32];
+
+        buf.add(peer, [10u8; 32], Bytes::from_static(b"data"));
+        assert_eq!(buf.count(&peer), 1);
+
+        buf.clear(&peer);
+        assert_eq!(buf.count(&peer), 0);
     }
 }
