@@ -30,8 +30,7 @@ pub async fn listener_loop(
         .context("failed to create multicast listener socket")?;
 
     // Convert to tokio UdpSocket for async recv
-    let socket =
-        UdpSocket::from_std(socket).context("failed to convert to tokio UdpSocket")?;
+    let socket = UdpSocket::from_std(socket).context("failed to convert to tokio UdpSocket")?;
 
     let mut buf = vec![0u8; 1024];
 

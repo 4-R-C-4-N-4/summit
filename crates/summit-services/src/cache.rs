@@ -85,8 +85,7 @@ impl ChunkCache {
         {
             let mut file = fs::File::create(&tmp_path)
                 .with_context(|| format!("failed to create temp file: {}", tmp_path.display()))?;
-            file.write_all(data)
-                .context("failed to write chunk data")?;
+            file.write_all(data).context("failed to write chunk data")?;
             file.sync_all().context("failed to sync chunk to disk")?;
         }
 

@@ -18,10 +18,7 @@ impl MessageStore {
 
     /// Add a message
     pub fn add(&self, peer_pubkey: [u8; 32], message: MessageChunk) {
-        self.messages
-            .entry(peer_pubkey)
-            .or_default()
-            .push(message);
+        self.messages.entry(peer_pubkey).or_default().push(message);
     }
 
     /// Get all messages with a peer
