@@ -76,11 +76,7 @@ pub async fn broadcast_loop(
             let bytes = announcement.as_bytes();
 
             match socket.send_to(bytes, &dest.into()) {
-                Ok(n) => tracing::trace!(
-                    service_index = index,
-                    bytes = n,
-                    "broadcast sent"
-                ),
+                Ok(n) => tracing::trace!(service_index = index, bytes = n, "broadcast sent"),
                 Err(e) => tracing::warn!(
                     service_index = index,
                     error = %e,
@@ -93,8 +89,7 @@ pub async fn broadcast_loop(
 
 /// Create a UDP socket suitable for sending IPv6 multicast.
 fn make_multicast_socket(interface_index: u32) -> Result<socket2::Socket> {
-    let socket =
-        Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP)).context("socket()")?;
+    let socket = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP)).context("socket()")?;
     socket.set_reuse_address(true).context("SO_REUSEADDR")?;
     socket
         .set_multicast_if_v6(interface_index)
@@ -107,8 +102,7 @@ fn make_multicast_socket(interface_index: u32) -> Result<socket2::Socket> {
 
 /// Get the OS interface index for a named network interface.
 pub fn if_index(name: &str) -> Result<u32> {
-    let name_cstr =
-        std::ffi::CString::new(name).context("interface name contains null byte")?;
+    let name_cstr = std::ffi::CString::new(name).context("interface name contains null byte")?;
     let index = unsafe { libc::if_nametoindex(name_cstr.as_ptr()) };
     if index == 0 {
         anyhow::bail!("interface '{}' not found", name);

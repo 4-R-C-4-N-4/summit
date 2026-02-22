@@ -44,8 +44,8 @@ impl ChunkService for MessagingService {
         _header: &ChunkHeader,
         payload: &[u8],
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let envelope: MessageEnvelope = serde_json::from_slice(payload)
-            .map_err(|e| format!("invalid message JSON: {e}"))?;
+        let envelope: MessageEnvelope =
+            serde_json::from_slice(payload).map_err(|e| format!("invalid message JSON: {e}"))?;
 
         tracing::debug!(
             sender = &envelope.sender[..16.min(envelope.sender.len())],

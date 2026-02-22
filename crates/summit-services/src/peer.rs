@@ -59,12 +59,10 @@ impl PeerEntry {
     }
 
     /// Update from a subsequent announcement datagram.
-    pub fn update_from_announcement(
-        &mut self,
-        ann: &summit_core::wire::CapabilityAnnouncement,
-    ) {
+    pub fn update_from_announcement(&mut self, ann: &summit_core::wire::CapabilityAnnouncement) {
         let contract = Contract::try_from(ann.contract).unwrap_or(Contract::Bulk);
-        self.services.insert(ann.service_hash, (contract, ann.chunk_port));
+        self.services
+            .insert(ann.service_hash, (contract, ann.chunk_port));
         self.session_port = ann.session_port;
         self.expected_service_count = ann.service_count;
         self.last_seen = Instant::now();

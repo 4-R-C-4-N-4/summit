@@ -243,8 +243,7 @@ impl SummitConfig {
             }
             let text = toml::to_string_pretty(&SummitConfig::default())
                 .map_err(ConfigError::SerializeFailed)?;
-            std::fs::write(&path, text)
-                .map_err(|e| ConfigError::WriteFailed(path.clone(), e))?;
+            std::fs::write(&path, text).map_err(|e| ConfigError::WriteFailed(path.clone(), e))?;
         }
         Ok(path)
     }
@@ -303,8 +302,7 @@ mod tests {
 
     #[test]
     fn write_default_if_missing_creates_file() {
-        let tmp = std::env::temp_dir()
-            .join(format!("summit-config-test-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("summit-config-test-{}", std::process::id()));
         let config_path = tmp.join("config.toml");
         std::fs::create_dir_all(&tmp).unwrap();
 
@@ -313,7 +311,8 @@ mod tests {
             std::env::set_var("SUMMIT_CONFIG", config_path.to_str().unwrap());
         }
 
-        let path = SummitConfig::write_default_if_missing().expect("write_default_if_missing failed");
+        let path =
+            SummitConfig::write_default_if_missing().expect("write_default_if_missing failed");
         assert!(path.exists());
 
         // Loading from it should give defaults

@@ -65,9 +65,9 @@ impl TokenBucket {
     /// Background chunks are rate-limited more aggressively.
     pub fn try_consume_for_priority(&mut self, priority: u8, bytes: usize) -> bool {
         match priority {
-            0x01 => true,             // Realtime: never rate-limit
+            0x01 => true,                        // Realtime: never rate-limit
             0x03 => self.try_consume(bytes / 2), // Background: half rate
-            _ => self.try_consume(bytes), // Bulk: normal rate
+            _ => self.try_consume(bytes),        // Bulk: normal rate
         }
     }
 

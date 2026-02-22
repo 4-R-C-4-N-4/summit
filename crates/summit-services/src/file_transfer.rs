@@ -158,7 +158,7 @@ impl FileReassembler {
 // ── ChunkService implementation ───────────────────────────────────────────────
 
 use crate::service::ChunkService;
-use summit_core::wire::{ChunkHeader, Contract, ServiceHash, service_hash};
+use summit_core::wire::{service_hash, ChunkHeader, Contract, ServiceHash};
 
 impl ChunkService for FileReassembler {
     fn service_hash(&self) -> ServiceHash {
@@ -219,7 +219,9 @@ impl ChunkService for FileReassembler {
                         if assembly.metadata.chunk_hashes.contains(&content_hash) {
                             assembly.chunks_received.insert(content_hash, data.clone());
 
-                            if assembly.chunks_received.len() == assembly.metadata.chunk_hashes.len() {
+                            if assembly.chunks_received.len()
+                                == assembly.metadata.chunk_hashes.len()
+                            {
                                 let mut file_data = Vec::new();
                                 for hash in &assembly.metadata.chunk_hashes {
                                     if let Some(chunk) = assembly.chunks_received.get(hash) {

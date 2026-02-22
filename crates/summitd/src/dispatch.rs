@@ -38,12 +38,7 @@ impl ServiceDispatcher {
 
     /// Dispatch an incoming chunk to the appropriate service.
     /// Returns false if no service handles this schema_id.
-    pub fn dispatch(
-        &self,
-        peer_pubkey: &[u8; 32],
-        header: &ChunkHeader,
-        payload: &[u8],
-    ) -> bool {
+    pub fn dispatch(&self, peer_pubkey: &[u8; 32], header: &ChunkHeader, payload: &[u8]) -> bool {
         if let Some(service) = self.schema_to_service.get(&header.schema_id) {
             if let Err(e) = service.handle_chunk(peer_pubkey, header, payload) {
                 tracing::warn!(

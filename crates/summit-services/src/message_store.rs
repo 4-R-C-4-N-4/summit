@@ -1,7 +1,7 @@
 use dashmap::DashMap;
 use std::sync::Arc;
 use summit_core::message::{
-    MessageChunk, MessageContent, MessageMetadata, MessageType, MessageEnvelope,
+    MessageChunk, MessageContent, MessageEnvelope, MessageMetadata, MessageType,
 };
 
 /// In-memory message store

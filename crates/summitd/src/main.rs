@@ -96,9 +96,9 @@ async fn main() -> Result<()> {
     tracing::info!(root = %cache_root, "chunk cache initialized");
 
     // Load config
+    use capability::broadcast::ServiceEntry;
     use summit_core::config::SummitConfig;
     use summit_core::wire::service_hash;
-    use capability::broadcast::ServiceEntry;
 
     let config = {
         if let Err(e) = SummitConfig::write_default_if_missing() {

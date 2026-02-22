@@ -70,10 +70,7 @@ impl TrustRegistry {
     /// Check if a peer should be trusted.
     /// Returns true if auto_trust is on OR the peer is explicitly trusted.
     pub fn is_trusted(&self, peer_pubkey: &[u8; 32]) -> bool {
-        if self
-            .auto_trust
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
+        if self.auto_trust.load(std::sync::atomic::Ordering::Relaxed) {
             return true;
         }
         self.rules
