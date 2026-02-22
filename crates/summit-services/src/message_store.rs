@@ -17,10 +17,7 @@ impl MessageStore {
 
     /// Store an envelope received from `peer_pubkey`.
     pub fn add(&self, peer_pubkey: [u8; 32], envelope: MessageEnvelope) {
-        self.messages
-            .entry(peer_pubkey)
-            .or_default()
-            .push(envelope);
+        self.messages.entry(peer_pubkey).or_default().push(envelope);
     }
 
     /// Get all envelopes received from `peer_pubkey`.

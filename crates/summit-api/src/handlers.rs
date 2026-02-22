@@ -391,9 +391,8 @@ pub async fn handle_send_message(
         payload: payload_value,
     };
 
-    let raw = serde_json::to_vec(&envelope).map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
-    })?;
+    let raw = serde_json::to_vec(&envelope)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let chunk = OutgoingChunk {
         type_tag: 0,
@@ -413,10 +412,7 @@ pub async fn handle_send_message(
     // Store locally so the sender can see their own sent messages
     state.message_store.add(to, envelope);
 
-    Ok(Json(SendMessageResponse {
-        msg_id,
-        timestamp,
-    }))
+    Ok(Json(SendMessageResponse { msg_id, timestamp }))
 }
 
 // ── /trust ────────────────────────────────────────────────────────────────────

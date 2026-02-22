@@ -567,12 +567,18 @@ async fn cmd_messages(port: u16, peer_pubkey: &str) -> Result<()> {
         get_json(&format!("{}/messages/{}", base_url(port), peer_pubkey)).await?;
 
     if resp.messages.is_empty() {
-        println!("No messages from {}...", &resp.peer_pubkey[..16.min(resp.peer_pubkey.len())]);
+        println!(
+            "No messages from {}...",
+            &resp.peer_pubkey[..16.min(resp.peer_pubkey.len())]
+        );
         return Ok(());
     }
 
     println!("═══════════════════════════════════════");
-    println!("  Messages from {}...", &resp.peer_pubkey[..16.min(resp.peer_pubkey.len())]);
+    println!(
+        "  Messages from {}...",
+        &resp.peer_pubkey[..16.min(resp.peer_pubkey.len())]
+    );
     println!("═══════════════════════════════════════");
 
     for m in &resp.messages {
@@ -599,7 +605,10 @@ async fn cmd_messages_send(port: u16, to: &str, text: &str) -> Result<()> {
         post_json_body(&format!("{}/messages/send", base_url(port)), &req).await?;
 
     println!("Message sent:");
-    println!("  ID        : {}...", &resp.msg_id[..16.min(resp.msg_id.len())]);
+    println!(
+        "  ID        : {}...",
+        &resp.msg_id[..16.min(resp.msg_id.len())]
+    );
     println!("  Timestamp : {}", resp.timestamp);
 
     Ok(())

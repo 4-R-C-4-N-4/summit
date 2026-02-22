@@ -274,8 +274,14 @@ fn test_link_local_addresses_assigned() {
     println!("summit-a: {addr_a}");
     println!("summit-b: {addr_b}");
 
-    assert!(addr_a.starts_with("fe80::"), "expected link-local in summit-a");
-    assert!(addr_b.starts_with("fe80::"), "expected link-local in summit-b");
+    assert!(
+        addr_a.starts_with("fe80::"),
+        "expected link-local in summit-a"
+    );
+    assert!(
+        addr_b.starts_with("fe80::"),
+        "expected link-local in summit-b"
+    );
     assert_ne!(addr_a, addr_b, "addresses should be different");
 }
 
@@ -369,10 +375,7 @@ fn test_daemon_status() {
         assert!(status_b["peers_discovered"].is_number());
 
         // summit-ctl status end-to-end
-        let ctl_out = netns_exec(
-            NS_A,
-            &[summit_ctl_path().to_str().unwrap(), "status"],
-        )?;
+        let ctl_out = netns_exec(NS_A, &[summit_ctl_path().to_str().unwrap(), "status"])?;
         assert!(
             ctl_out.contains("Summit Daemon Status"),
             "unexpected status output: {}",
@@ -456,10 +459,7 @@ fn test_multi_service_peer_discovery() {
         );
 
         // summit-ctl peers should display the services line
-        let ctl_peers = netns_exec(
-            NS_A,
-            &[summit_ctl_path().to_str().unwrap(), "peers"],
-        )?;
+        let ctl_peers = netns_exec(NS_A, &[summit_ctl_path().to_str().unwrap(), "peers"])?;
         assert!(
             ctl_peers.contains("services"),
             "peers output missing 'services': {}",
@@ -505,7 +505,9 @@ fn test_session_establishment() {
         thread::sleep(Duration::from_secs(8));
 
         let status_a = api_get(NS_A, "/status")?;
-        let sessions = status_a["sessions"].as_array().context("no sessions array")?;
+        let sessions = status_a["sessions"]
+            .as_array()
+            .context("no sessions array")?;
         assert!(
             !sessions.is_empty(),
             "node A has no sessions after 8s — handshake failed"
@@ -747,10 +749,7 @@ fn test_file_transfer_two_nodes() {
         thread::sleep(Duration::from_secs(8));
 
         // Check B received it
-        let files_out = netns_exec(
-            NS_B,
-            &[summit_ctl_path().to_str().unwrap(), "files"],
-        )?;
+        let files_out = netns_exec(NS_B, &[summit_ctl_path().to_str().unwrap(), "files"])?;
         println!("Node B files:\n{}", files_out);
         assert!(
             files_out.contains("summit-integration-transfer.txt"),
@@ -759,10 +758,9 @@ fn test_file_transfer_two_nodes() {
         );
 
         // Verify content
-        let received = std::fs::read_to_string(
-            "/tmp/summit-received/summit-integration-transfer.txt",
-        )
-        .context("received file not found")?;
+        let received =
+            std::fs::read_to_string("/tmp/summit-received/summit-integration-transfer.txt")
+                .context("received file not found")?;
         assert_eq!(received, test_content, "file content mismatch");
 
         println!("Verified file transfer end-to-end");
@@ -816,9 +814,8 @@ fn test_messaging_service() {
         println!("Sending message to B ({}...)", &pubkey_b[..16]);
 
         // Send text message A -> B
-        let body =
-            serde_json::json!({ "to": pubkey_b, "text": "hello from integration test" })
-                .to_string();
+        let body = serde_json::json!({ "to": pubkey_b, "text": "hello from integration test" })
+            .to_string();
         let send_resp = api_post(NS_A, "/messages/send", &body)?;
         assert!(
             send_resp["msg_id"].is_string(),
@@ -836,7 +833,9 @@ fn test_messaging_service() {
         // Get A's pubkey as seen from B, then check B's message store
         let pubkey_a = get_peer_pubkey(NS_B)?;
         let msgs_resp = api_get(NS_B, &format!("/messages/{}", pubkey_a))?;
-        let msgs = msgs_resp["messages"].as_array().context("no messages array")?;
+        let msgs = msgs_resp["messages"]
+            .as_array()
+            .context("no messages array")?;
         assert!(!msgs.is_empty(), "no messages on B from A after 4s");
 
         let text = msgs[0]["content"]["text"].as_str().unwrap_or("");
@@ -915,8 +914,7 @@ fn test_service_config_disable_messaging() {
         );
         println!(
             "A announced {} service(s), complete={} — messaging disabled",
-            svc_count,
-            peer_a_on_b["is_complete"]
+            svc_count, peer_a_on_b["is_complete"]
         );
 
         // A itself should see B with 2 services (B has default config)
