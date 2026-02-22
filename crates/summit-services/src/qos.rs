@@ -60,6 +60,36 @@ impl TokenBucket {
         }
     }
 
+    /// Try to consume tokens for a chunk with the given priority.
+    /// Realtime chunks bypass rate limiting entirely.
+    /// Background chunks are rate-limited more aggressively.
+    pub fn try_consume_for_priority(&mut self, priority: u8, bytes: usize) -> bool {
+        match priority {
+            0x01 => true,             // Realtime: never rate-limit
+            0x03 => self.try_consume(bytes / 2), // Background: half rate
+            _ => self.try_consume(bytes), // Bulk: normal rate
+        }
+    }
+
+    fn try_consume(&mut self, bytes: usize) -> bool {
+        if matches!(self.contract, Contract::Realtime) {
+            return true;
+        }
+
+        let now = std::time::Instant::now();
+        let elapsed = now.duration_since(self.last_refill).as_secs_f64();
+        self.tokens = (self.tokens + elapsed * self.refill_rate).min(self.capacity);
+        self.last_refill = now;
+
+        let cost = (bytes as f64 / 1024.0).max(1.0);
+        if self.tokens >= cost {
+            self.tokens -= cost;
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn contract(&self) -> Contract {
         self.contract
     }

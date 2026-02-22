@@ -55,39 +55,81 @@ pub struct ChunkHeader {
 // Compile-time size guard. If this fails, the wire format has silently changed.
 assert_eq_size!(ChunkHeader, [u8; 72]);
 
+// ── Service Hashes ────────────────────────────────────────────────────────────
+
+/// Service identifier — BLAKE3 hash of a canonical service name.
+/// Used in CapabilityAnnouncement.service_hash and for routing.
+pub type ServiceHash = [u8; 32];
+
+/// Compute a ServiceHash from a canonical name.
+/// The input byte string is the protocol-level name and must never change
+/// for a given service after Zenith.
+pub fn service_hash(name: &[u8]) -> ServiceHash {
+    *blake3::hash(name).as_bytes()
+}
+
+/// Pre-computed service hash functions. Recomputed on each call (no allocation).
+
+pub fn file_transfer_hash() -> ServiceHash {
+    service_hash(b"summit.file_transfer")
+}
+
+pub fn messaging_hash() -> ServiceHash {
+    service_hash(b"summit.messaging")
+}
+
+pub fn stream_udp_hash() -> ServiceHash {
+    service_hash(b"summit.stream_udp")
+}
+
+pub fn compute_hash() -> ServiceHash {
+    service_hash(b"summit.compute")
+}
+
 // ── Capability Announcement ───────────────────────────────────────────────────
 
-/// Broadcast on ff02::1 (IPv6 link-local multicast) to announce a capability.
+/// Broadcast via ff02::1 multicast to announce ONE service.
 ///
-/// Devices transmit one datagram per capability on a regular interval.
-/// Receivers maintain a peer registry keyed on capability_hash, expiring
-/// entries that have not been refreshed within the TTL.
+/// Peers send N datagrams per broadcast interval, one per enabled service.
+/// Receivers collect datagrams by `public_key` and build the peer's full
+/// service set when `service_index` values 0..service_count-1 are all present.
 ///
-/// The source IP address of the datagram is the peer's link-local address —
-/// no address field is needed in the struct itself.
-///
-/// Capability announcement — broadcast via multicast to discover peers.
-/// Wire size: 104 bytes
+/// Wire size: 76 bytes (was 74 — two new fields: service_count, service_index).
 #[derive(Debug, Clone, AsBytes, FromBytes, FromZeroes)]
 #[repr(C, packed)]
 pub struct CapabilityAnnouncement {
-    /// BLAKE3 hash of the capability name.
-    pub capability_hash: [u8; 32],
-    /// Ed25519 public key (will be X25519 for Noise).
+    /// BLAKE3 hash identifying which service this datagram announces.
+    /// Was `capability_hash` — renamed for clarity.
+    pub service_hash: [u8; 32],
+
+    /// Ed25519 public key of the announcing peer.
     pub public_key: [u8; 32],
+
     /// Protocol version.
     pub version: u32,
-    /// Session handshake port.
+
+    /// Session handshake port (TCP).
     pub session_port: u16,
-    /// Chunk data port (NEW).
+
+    /// Chunk data port. 0 = use session_port (typical for Bulk services).
+    /// For Realtime services (future), a dedicated UDP port.
     pub chunk_port: u16,
-    /// Latency contract for this capability.
+
+    /// Contract for THIS service.
+    /// 0x01 = Realtime, 0x02 = Bulk, 0x03 = Background.
     pub contract: u8,
-    /// Reserved for future use.
+
+    /// Bit flags. Reserved, must be zero.
     pub flags: u8,
+
+    /// Total number of services this peer offers.
+    pub service_count: u8,
+
+    /// Zero-indexed position of this service in the broadcast set.
+    pub service_index: u8,
 }
 
-assert_eq_size!(CapabilityAnnouncement, [u8; 74]);
+assert_eq_size!(CapabilityAnnouncement, [u8; 76]);
 
 // ── Handshake ─────────────────────────────────────────────────────────────────
 
@@ -107,8 +149,8 @@ assert_eq_size!(CapabilityAnnouncement, [u8; 74]);
 pub struct HandshakeInit {
     /// Initiator nonce — contributes to session ID derivation.
     pub nonce: [u8; 16],
-    /// The capability hash being requested.
-    pub capability_hash: [u8; 32],
+    /// The service hash being requested.
+    pub service_hash: [u8; 32],
     /// Raw Noise_XX message 1 bytes — passed directly to snow.
     pub noise_msg: [u8; 32],
 }
@@ -274,47 +316,63 @@ mod tests {
     #[test]
     fn announcement_round_trip() {
         let original = CapabilityAnnouncement {
-            capability_hash: [0x11; 32],
+            service_hash: [0x11; 32],
             public_key: [0x22; 32],
             version: 7,
             session_port: 9000,
             chunk_port: 9001,
             contract: Contract::Bulk as u8,
             flags: 0,
+            service_count: 3,
+            service_index: 1,
         };
 
         let bytes = original.as_bytes();
-        assert_eq!(bytes.len(), 74);
+        assert_eq!(bytes.len(), 76);
 
         let recovered = CapabilityAnnouncement::read_from(bytes).unwrap();
 
-        let recovered_hash = recovered.capability_hash;
-        let recovered_pubkey = recovered.public_key;
-        let recovered_session = recovered.session_port;
+        // Copy packed fields to locals to avoid unaligned reference UB
+        let recovered_service_hash = recovered.service_hash;
+        let recovered_public_key = recovered.public_key;
+        let recovered_session_port = recovered.session_port;
         let recovered_chunk_port = recovered.chunk_port;
         let recovered_contract = recovered.contract;
         let recovered_version = recovered.version;
+        let recovered_service_count = recovered.service_count;
+        let recovered_service_index = recovered.service_index;
 
-        assert_eq!(recovered_hash, original.capability_hash);
-        assert_eq!(recovered_pubkey, original.public_key);
-        assert_eq!(recovered_session, 9000);
+        assert_eq!(recovered_service_hash, original.service_hash);
+        assert_eq!(recovered_public_key, original.public_key);
+        assert_eq!(recovered_session_port, 9000);
         assert_eq!(recovered_chunk_port, 9001);
         assert_eq!(recovered_contract, Contract::Bulk as u8);
         assert_eq!(recovered_version, 7);
+        assert_eq!(recovered_service_count, 3);
+        assert_eq!(recovered_service_index, 1);
+    }
+
+    #[test]
+    fn service_hashes_are_deterministic() {
+        let a = service_hash(b"summit.file_transfer");
+        let b = service_hash(b"summit.file_transfer");
+        let c = service_hash(b"summit.messaging");
+        assert_eq!(a, b, "same input must produce same hash");
+        assert_ne!(a, c, "different inputs must produce different hashes");
     }
 
     #[test]
     fn handshake_init_round_trip() {
         let original = HandshakeInit {
             nonce: [0x55; 16],
-            capability_hash: [0x44; 32],
+            service_hash: [0x44; 32],
             noise_msg: [0x33; 32],
         };
         let bytes = original.as_bytes();
         assert_eq!(bytes.len(), 80);
         let recovered = HandshakeInit::read_from_prefix(bytes).unwrap();
         assert_eq!(recovered.nonce, original.nonce);
-        assert_eq!(recovered.capability_hash, original.capability_hash);
+        assert_eq!(recovered.service_hash, original.service_hash);
         assert_eq!(recovered.noise_msg, original.noise_msg);
     }
 

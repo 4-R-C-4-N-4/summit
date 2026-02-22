@@ -44,6 +44,7 @@ pub fn chunk_file(path: &std::path::Path) -> Result<Vec<OutgoingChunk>> {
             type_tag: 2, // File data chunk
             schema_id: KnownSchema::FileData.id(),
             payload: Bytes::copy_from_slice(chunk_data),
+            priority_flags: 0x02, // Bulk
         });
     }
 
@@ -61,6 +62,7 @@ pub fn chunk_file(path: &std::path::Path) -> Result<Vec<OutgoingChunk>> {
             type_tag: 3, // File metadata
             schema_id: KnownSchema::FileMetadata.id(),
             payload: Bytes::from(metadata_bytes),
+            priority_flags: 0x02, // Bulk
         },
     );
 
@@ -150,6 +152,104 @@ impl FileReassembler {
     /// List files currently being received
     pub async fn in_progress(&self) -> Vec<String> {
         self.active.lock().await.keys().cloned().collect()
+    }
+}
+
+// ── ChunkService implementation ───────────────────────────────────────────────
+
+use crate::service::ChunkService;
+use summit_core::wire::{ChunkHeader, Contract, ServiceHash, service_hash};
+
+impl ChunkService for FileReassembler {
+    fn service_hash(&self) -> ServiceHash {
+        service_hash(b"summit.file_transfer")
+    }
+
+    fn contract(&self) -> Contract {
+        Contract::Bulk
+    }
+
+    fn on_activate(&self, peer_pubkey: &[u8; 32]) {
+        tracing::info!(
+            peer = hex::encode(&peer_pubkey[..8]),
+            "file transfer activated"
+        );
+    }
+
+    fn on_deactivate(&self, peer_pubkey: &[u8; 32]) {
+        tracing::info!(
+            peer = hex::encode(&peer_pubkey[..8]),
+            "file transfer deactivated"
+        );
+    }
+
+    fn handle_chunk(
+        &self,
+        _peer_pubkey: &[u8; 32],
+        header: &ChunkHeader,
+        payload: &[u8],
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let data = Bytes::copy_from_slice(payload);
+        let active = self.active.clone();
+        let output_dir = self.output_dir.clone();
+        let content_hash = header.content_hash;
+        let type_tag = header.type_tag;
+
+        // Use tokio::task::block_in_place to call async methods from sync context
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async move {
+                if type_tag == 3 {
+                    // File metadata chunk
+                    if let Ok(metadata) = serde_json::from_slice::<FileMetadata>(&data) {
+                        let mut active = active.lock().await;
+                        active.insert(
+                            metadata.filename.clone(),
+                            FileAssembly {
+                                metadata,
+                                chunks_received: HashMap::new(),
+                            },
+                        );
+                    }
+                } else if type_tag == 2 {
+                    // File data chunk — reassemble
+                    let mut active_lock = active.lock().await;
+                    let mut completed_file: Option<(String, std::path::PathBuf)> = None;
+
+                    for (filename, assembly) in active_lock.iter_mut() {
+                        if assembly.metadata.chunk_hashes.contains(&content_hash) {
+                            assembly.chunks_received.insert(content_hash, data.clone());
+
+                            if assembly.chunks_received.len() == assembly.metadata.chunk_hashes.len() {
+                                let mut file_data = Vec::new();
+                                for hash in &assembly.metadata.chunk_hashes {
+                                    if let Some(chunk) = assembly.chunks_received.get(hash) {
+                                        file_data.extend_from_slice(chunk);
+                                    }
+                                }
+                                let output_path = output_dir.join(&assembly.metadata.filename);
+                                if let Err(e) = std::fs::write(&output_path, &file_data) {
+                                    tracing::warn!(error = %e, "failed to write reassembled file");
+                                } else {
+                                    tracing::info!(
+                                        filename = %assembly.metadata.filename,
+                                        path = %output_path.display(),
+                                        "file received and reassembled"
+                                    );
+                                }
+                                completed_file = Some((filename.clone(), output_path));
+                            }
+                            break;
+                        }
+                    }
+
+                    if let Some((filename, _)) = completed_file {
+                        active_lock.remove(&filename);
+                    }
+                }
+            })
+        });
+
+        Ok(())
     }
 }
 

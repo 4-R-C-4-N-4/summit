@@ -64,7 +64,7 @@ pub async fn handle_status(State(state): State<ApiState>) -> Json<StatusResponse
                 session_id: hex::encode(meta.session_id),
                 peer: meta.peer_addr.to_string(),
                 peer_pubkey: hex::encode(meta.peer_pubkey),
-                contract: format!("{:?}", meta.contract),
+                contract: format!("{:?}", meta.primary_contract()),
                 chunk_port: meta.chunk_port,
                 established_secs: meta.established_at.elapsed().as_secs(),
                 trust_level: format!("{:?}", trust_level),
@@ -98,8 +98,9 @@ pub struct PeerInfo {
     pub public_key: String,
     pub addr: String,
     pub session_port: u16,
-    pub chunk_port: u16,
-    pub contract: u8,
+    pub services: Vec<String>,
+    pub service_count: usize,
+    pub is_complete: bool,
     pub version: u32,
     pub last_seen_secs: u64,
     pub trust_level: String,
@@ -115,13 +116,15 @@ pub async fn handle_peers(State(state): State<ApiState>) -> Json<PeersResponse> 
             let pubkey = *e.key();
             let trust_level = state.trust.check(&pubkey);
             let buffered_chunks = state.untrusted_buffer.count(&pubkey);
+            let services: Vec<String> = p.services.keys().map(hex::encode).collect();
 
             PeerInfo {
                 public_key: hex::encode(p.public_key),
                 addr: p.addr.to_string(),
                 session_port: p.session_port,
-                chunk_port: p.chunk_port,
-                contract: p.contract,
+                services,
+                service_count: p.expected_service_count as usize,
+                is_complete: p.is_complete(),
                 version: p.version,
                 last_seen_secs: p.last_seen.elapsed().as_secs(),
                 trust_level: format!("{:?}", trust_level),
@@ -376,6 +379,7 @@ pub async fn handle_send_message(
         type_tag: 4,
         schema_id: KnownSchema::Message.id(),
         payload: bytes::Bytes::from(payload),
+        priority_flags: 0x02, // Bulk
     };
 
     // Send to peer
@@ -624,7 +628,7 @@ pub async fn handle_session_inspect(
         session_id: hex::encode(meta.session_id),
         peer_addr: meta.peer_addr.to_string(),
         peer_pubkey: hex::encode(meta.peer_pubkey),
-        contract: format!("{:?}", meta.contract),
+        contract: format!("{:?}", meta.primary_contract()),
         chunk_port: meta.chunk_port,
         uptime_secs: meta.established_at.elapsed().as_secs(),
         trust_level: format!("{:?}", trust_level),

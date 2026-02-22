@@ -5,7 +5,7 @@
 //! peer registry. A separate expiry task removes stale entries.
 
 use std::net::{Ipv6Addr, SocketAddrV6};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use socket2::{Domain, Protocol, Socket, Type};
@@ -63,28 +63,29 @@ pub async fn listener_loop(
                     continue;
                 }
 
-                let cap_hash = announcement.capability_hash;
-                let session_port = announcement.session_port; // copy to avoid alignment issue
+                let svc_hash = announcement.service_hash;
+                let svc_index = announcement.service_index;
+                let svc_count = announcement.service_count;
+                let session_port = announcement.session_port;
 
                 tracing::debug!(
-                    capability = hex::encode(cap_hash),
-                                addr = %peer_addr,
-                                port = session_port,  // use local copy
-                                "peer discovered"
+                    service_hash = hex::encode(svc_hash),
+                    service_index = svc_index,
+                    service_count = svc_count,
+                    addr = %peer_addr,
+                    port = session_port,
+                    "service announcement received"
                 );
 
-                registry.insert(
-                    announcement.public_key,
-                    PeerEntry {
-                        addr: sender_addr,
-                        public_key: announcement.public_key,
-                        session_port: announcement.session_port,
-                        chunk_port: announcement.chunk_port,
-                        version: announcement.version,
-                        contract: announcement.contract,
-                        last_seen: Instant::now(),
-                    },
-                );
+                // Upsert into peer registry — accumulate services.
+                registry
+                    .entry(announcement.public_key)
+                    .and_modify(|entry| {
+                        entry.update_from_announcement(&announcement);
+                    })
+                    .or_insert_with(|| {
+                        PeerEntry::from_first_announcement(sender_addr, &announcement)
+                    });
             }
             None => {
                 tracing::trace!("failed to parse capability announcement");

@@ -13,12 +13,14 @@ use summit_core::wire::Contract;
 
 use summit_services::{
     new_registry, new_session_table, ActiveSession, ChunkCache, FileReassembler, MessageStore,
-    SendTarget, SessionMeta, TokenBucket, TrustLevel, TrustRegistry, UntrustedBuffer,
+    SendTarget, ServiceOnSession, SessionMeta, TokenBucket, TrustLevel, TrustRegistry,
+    UntrustedBuffer,
 };
 
 mod capability;
 mod chunk;
 mod delivery;
+mod dispatch;
 mod session;
 
 use capability::{broadcast, listener};
@@ -93,15 +95,74 @@ async fn main() -> Result<()> {
     let cache = ChunkCache::new(&cache_root)?;
     tracing::info!(root = %cache_root, "chunk cache initialized");
 
+    // Load config
+    use summit_core::config::SummitConfig;
+    use summit_core::wire::service_hash;
+    use capability::broadcast::ServiceEntry;
+
+    let config = {
+        if let Err(e) = SummitConfig::write_default_if_missing() {
+            tracing::warn!(error = %e, "failed to write default config");
+        }
+        SummitConfig::load().unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "failed to load config, using defaults");
+            SummitConfig::default()
+        })
+    };
+
+    tracing::info!(
+        file_transfer = config.services.file_transfer,
+        messaging = config.services.messaging,
+        stream_udp = config.services.stream_udp,
+        compute = config.services.compute,
+        "services enabled"
+    );
+
+    // Build service list from config
+    let mut broadcast_services = Vec::new();
+
+    if config.services.file_transfer {
+        broadcast_services.push(ServiceEntry {
+            hash: service_hash(b"summit.file_transfer"),
+            contract: Contract::Bulk,
+            chunk_port: 0,
+        });
+    }
+
+    if config.services.messaging {
+        broadcast_services.push(ServiceEntry {
+            hash: service_hash(b"summit.messaging"),
+            contract: Contract::Bulk,
+            chunk_port: 0,
+        });
+    }
+
+    if config.services.stream_udp {
+        broadcast_services.push(ServiceEntry {
+            hash: service_hash(b"summit.stream_udp"),
+            contract: Contract::Realtime,
+            chunk_port: config.network.chunk_port,
+        });
+    }
+
+    if config.services.compute {
+        broadcast_services.push(ServiceEntry {
+            hash: service_hash(b"summit.compute"),
+            contract: Contract::Bulk,
+            chunk_port: 0,
+        });
+    }
+
     // Capability tasks
     let broadcast_task = {
         let keypair = keypair.clone();
 
         tokio::spawn(async move {
             if let Err(e) = capability::broadcast::broadcast_loop(
-                keypair, // Arc<Keypair>
+                keypair,
                 interface_index,
                 session_listen_port,
+                broadcast_services,
             )
             .await
             {
@@ -352,14 +413,25 @@ async fn main() -> Result<()> {
                                 let peer_chunk_port = u16::from_le_bytes([decrypted[0], decrypted[1]]);
                                 let session_id = state.session.session_id;
 
+                                use std::collections::HashMap;
+                                let mut active_services = HashMap::new();
+                                active_services.insert(
+                                    summit_core::wire::service_hash(b"summit.file_transfer"),
+                                    ServiceOnSession { contract: Contract::Bulk, chunk_port: 0 },
+                                );
+                                active_services.insert(
+                                    summit_core::wire::service_hash(b"summit.messaging"),
+                                    ServiceOnSession { contract: Contract::Bulk, chunk_port: 0 },
+                                );
+
                                 sessions.insert(session_id, ActiveSession {
                                     meta: SessionMeta {
                                         session_id,
                                         peer_addr,
                                         chunk_port: peer_chunk_port,
-                                        contract: Contract::Bulk,
                                         established_at: std::time::Instant::now(),
                                         peer_pubkey: state.peer_pubkey,
+                                        active_services,
                                     },
                                     crypto: Arc::new(Mutex::new(state.session)),
                                     socket: state.chunk_socket,
@@ -398,14 +470,24 @@ async fn main() -> Result<()> {
 
                                 let session_id = state.session.session_id;
 
+                                let mut active_services_r = std::collections::HashMap::new();
+                                active_services_r.insert(
+                                    summit_core::wire::service_hash(b"summit.file_transfer"),
+                                    ServiceOnSession { contract: Contract::Bulk, chunk_port: 0 },
+                                );
+                                active_services_r.insert(
+                                    summit_core::wire::service_hash(b"summit.messaging"),
+                                    ServiceOnSession { contract: Contract::Bulk, chunk_port: 0 },
+                                );
+
                                 sessions.insert(session_id, ActiveSession {
                                     meta: SessionMeta {
                                         session_id,
                                         peer_addr,
                                         chunk_port: peer_chunk_port,
-                                        contract: Contract::Bulk,
                                         established_at: std::time::Instant::now(),
                                         peer_pubkey: state.peer_pubkey,
+                                        active_services: active_services_r,
                                     },
                                     crypto: Arc::new(Mutex::new(state.session)),
                                     socket: state.chunk_socket,
@@ -510,7 +592,7 @@ async fn main() -> Result<()> {
 
                     // Build HandshakeInit
                     let init = HandshakeInit {
-                        capability_hash: summit_core::crypto::hash(b"summit.test"),
+                        service_hash: summit_core::wire::service_hash(b"summit.file_transfer"),
                         noise_msg: match msg1.try_into() {
                             Ok(m) => m,
                             Err(_) => {
@@ -569,7 +651,22 @@ async fn main() -> Result<()> {
 
     // Trust registry and untrusted chunk buffer
     let trust_registry = TrustRegistry::new();
+    trust_registry.apply_config(config.trust.auto_trust, &config.trust.trusted_peers);
+    if config.trust.auto_trust {
+        tracing::warn!("auto-trust enabled — all discovered peers will be trusted");
+    }
     let untrusted_buffer = UntrustedBuffer::new();
+
+    // Service dispatcher — routes chunks to the appropriate service
+    let dispatcher = {
+        use dispatch::ServiceDispatcher;
+        use summit_services::{ChunkService, MessagingService};
+        let mut d = ServiceDispatcher::new();
+        d.register(reassembler.clone() as Arc<dyn ChunkService>);
+        let messaging = Arc::new(MessagingService::new(message_store.clone()));
+        d.register(messaging as Arc<dyn ChunkService>);
+        Arc::new(d)
+    };
 
     // Spawn chunk send/receive tasks for each active session
     let chunk_manager = {
@@ -580,6 +677,7 @@ async fn main() -> Result<()> {
         let trust_ref = trust_registry.clone();
         let buffer_ref = untrusted_buffer.clone();
         let message_store_ref = message_store.clone();
+        let dispatcher_ref = dispatcher.clone();
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(1));
@@ -607,6 +705,7 @@ async fn main() -> Result<()> {
                         let trust = trust_ref.clone();
                         let buffer = buffer_ref.clone();
                         let message_store = message_store_ref.clone();
+                        let dispatcher = dispatcher_ref.clone();
 
                         // Create channel for received chunks
                         let (chunk_tx, mut chunk_rx) =
@@ -704,6 +803,8 @@ async fn main() -> Result<()> {
                                 recv_cache,
                                 recv_tracker,
                                 peer_addr_str,
+                                dispatcher,
+                                peer_pubkey,
                             )
                             .await
                             {
@@ -765,7 +866,7 @@ async fn main() -> Result<()> {
                 // Priority check
                 let has_realtime = sessions
                     .iter()
-                    .any(|e| matches!(e.value().meta.contract, Contract::Realtime));
+                    .any(|e| matches!(e.value().meta.primary_contract(), Contract::Realtime));
 
                 let mut send_tasks = Vec::new();
 
@@ -778,7 +879,7 @@ async fn main() -> Result<()> {
                     let chunk_port = session.meta.chunk_port;
                     let socket = session.value().socket.clone();
                     let crypto = session.value().crypto.clone();
-                    let contract = session.meta.contract;
+                    let contract = session.meta.primary_contract();
 
                     // Drop Background if Realtime is active
                     if has_realtime && matches!(contract, Contract::Background) {

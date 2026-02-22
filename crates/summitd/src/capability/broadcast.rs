@@ -1,8 +1,8 @@
 //! Capability announcement broadcast.
 //!
-//! Periodically sends CapabilityAnnouncement datagrams to the
-//! link-local multicast address ff02::1 so nearby peers can
-//! discover what this device offers.
+//! Periodically sends one CapabilityAnnouncement datagram per enabled service
+//! to the link-local multicast address ff02::1. Receivers accumulate by
+//! public_key to build each peer's full service set.
 
 use std::net::{Ipv6Addr, SocketAddrV6};
 use std::sync::Arc;
@@ -13,32 +13,46 @@ use socket2::{Domain, Protocol, Socket, Type};
 use zerocopy::AsBytes;
 
 use summit_core::crypto::Keypair;
-use summit_core::wire::{CapabilityAnnouncement, Contract, MULTICAST_ADDR};
-/// Broadcast a set of capability announcements on a regular interval.
+use summit_core::wire::{CapabilityAnnouncement, Contract, ServiceHash, MULTICAST_ADDR};
+
+/// One service to announce, with its contract and optional dedicated port.
+#[derive(Debug, Clone)]
+pub struct ServiceEntry {
+    pub hash: ServiceHash,
+    pub contract: Contract,
+    /// 0 means "use session_port" (typical for Bulk services).
+    pub chunk_port: u16,
+}
+
+/// Broadcast all enabled services on a regular interval.
 ///
-/// Runs forever — cancel by dropping the task handle.
+/// Sends one datagram per service per tick. Cancel by dropping the task handle.
 ///
 /// # Arguments
-/// * `capabilities` - The announcements to broadcast. All are sent each interval.
-/// * `interface_index` - The OS interface index to bind to (from `if_nametoindex`).
+/// * `keypair` — This node's identity keypair. Public key goes in each datagram.
+/// * `interface_index` — OS interface index to bind to.
+/// * `session_port` — TCP port for session handshakes.
+/// * `services` — List of services to announce. Built from config.
 pub async fn broadcast_loop(
     keypair: Arc<Keypair>,
     interface_index: u32,
     session_port: u16,
+    services: Vec<ServiceEntry>,
 ) -> Result<()> {
     let socket = make_multicast_socket(interface_index)
         .context("failed to create multicast broadcast socket")?;
 
-    let interval_secs = 2;
+    let interval_secs = summit_core::wire::ANNOUNCE_INTERVAL_SECS;
     let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
 
     let multicast: Ipv6Addr = MULTICAST_ADDR.parse().unwrap();
-    // Port 0 on the destination — recipients bind to a known port in listener.rs
     let dest = SocketAddrV6::new(multicast, 9000, 0, interface_index);
+
+    let service_count = services.len() as u8;
 
     tracing::info!(
         interface_index,
-        count = 1,
+        service_count,
         interval_secs,
         "capability broadcast starting"
     );
@@ -46,46 +60,55 @@ pub async fn broadcast_loop(
     loop {
         interval.tick().await;
 
-        // Build announcement with ACTUAL ports
-        let announcement = CapabilityAnnouncement {
-            capability_hash: summit_core::crypto::hash(b"summit.test"),
-            public_key: keypair.public,
-            version: 1,
-            session_port, // use actual port
-            chunk_port: 0,
-            contract: Contract::Bulk as u8,
-            flags: 0,
-        };
-        let bytes = announcement.as_bytes();
+        for (index, entry) in services.iter().enumerate() {
+            let announcement = CapabilityAnnouncement {
+                service_hash: entry.hash,
+                public_key: keypair.public,
+                version: 1,
+                session_port,
+                chunk_port: entry.chunk_port,
+                contract: entry.contract as u8,
+                flags: 0,
+                service_count,
+                service_index: index as u8,
+            };
 
-        // Send once (no loop, we have only 1 capability)
-        match socket.send_to(bytes, &dest.into()) {
-            Ok(n) => tracing::trace!(bytes = n, "broadcast sent"),
-            Err(e) => tracing::warn!(error = %e, "broadcast send failed"),
+            let bytes = announcement.as_bytes();
+
+            match socket.send_to(bytes, &dest.into()) {
+                Ok(n) => tracing::trace!(
+                    service_index = index,
+                    bytes = n,
+                    "broadcast sent"
+                ),
+                Err(e) => tracing::warn!(
+                    service_index = index,
+                    error = %e,
+                    "broadcast send failed"
+                ),
+            }
         }
     }
 }
 
 /// Create a UDP socket suitable for sending IPv6 multicast.
 fn make_multicast_socket(interface_index: u32) -> Result<socket2::Socket> {
-    let socket = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP)).context("socket()")?;
-
+    let socket =
+        Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP)).context("socket()")?;
     socket.set_reuse_address(true).context("SO_REUSEADDR")?;
     socket
         .set_multicast_if_v6(interface_index)
         .context("IPV6_MULTICAST_IF")?;
-    // TTL 1 — link-local only, do not route beyond this link
     socket
         .set_multicast_hops_v6(1)
         .context("IPV6_MULTICAST_HOPS")?;
-
     Ok(socket)
 }
 
 /// Get the OS interface index for a named network interface.
-/// Returns an error if the interface does not exist.
 pub fn if_index(name: &str) -> Result<u32> {
-    let name_cstr = std::ffi::CString::new(name).context("interface name contains null byte")?;
+    let name_cstr =
+        std::ffi::CString::new(name).context("interface name contains null byte")?;
     let index = unsafe { libc::if_nametoindex(name_cstr.as_ptr()) };
     if index == 0 {
         anyhow::bail!("interface '{}' not found", name);

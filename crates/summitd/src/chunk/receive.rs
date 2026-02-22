@@ -13,6 +13,7 @@ use summit_services::{ChunkCache, KnownSchema};
 use super::IncomingChunk;
 
 use crate::delivery::DeliveryTracker;
+use crate::dispatch::ServiceDispatcher;
 
 pub async fn receive_loop(
     socket: Arc<UdpSocket>,
@@ -21,6 +22,8 @@ pub async fn receive_loop(
     cache: ChunkCache,
     tracker: DeliveryTracker,
     peer_addr: String,
+    dispatcher: Arc<ServiceDispatcher>,
+    peer_pubkey: [u8; 32],
 ) -> Result<()> {
     let mut buf = vec![0u8; 65536 + 1024];
 
@@ -65,9 +68,9 @@ pub async fn receive_loop(
             if let Err(e) = schema.validate(&payload) {
                 tracing::warn!(
                     schema = schema.name(),
-                               error = %e,
-                               content_hash = hex::encode(header.content_hash),
-                               "chunk failed schema validation, discarding"
+                    error = %e,
+                    content_hash = hex::encode(header.content_hash),
+                    "chunk failed schema validation, discarding"
                 );
                 continue;
             }
@@ -97,18 +100,25 @@ pub async fn receive_loop(
 
         tracing::info!(
             content_hash = hex::encode(incoming.content_hash),
-                       type_tag = incoming.type_tag,
-                       payload_len = incoming.payload.len(),
-                       cached = true,
-                       delivery_count,
-                       peer = %peer_addr,
-                       "chunk received"
+            type_tag = incoming.type_tag,
+            payload_len = incoming.payload.len(),
+            cached = true,
+            delivery_count,
+            peer = %peer_addr,
+            "chunk received"
         );
 
         // Only deliver to application on FIRST receipt
         if delivery_count == 1 {
-            if chunk_tx.send(incoming).await.is_err() {
-                bail!("chunk receiver dropped, terminating receive loop");
+            // Try service dispatch first
+            let dispatched = dispatcher.dispatch(&peer_pubkey, &header, &incoming.payload);
+
+            if !dispatched {
+                // No service handled it — send on the general channel
+                // for backward compatibility with existing handlers.
+                if chunk_tx.send(incoming).await.is_err() {
+                    bail!("chunk receiver dropped, terminating receive loop");
+                }
             }
         } else {
             tracing::debug!(

@@ -33,7 +33,7 @@ pub async fn send_chunk(
         schema_id: chunk.schema_id,
         type_tag: chunk.type_tag,
         length: chunk.payload.len() as u32,
-        flags: 0,
+        flags: chunk.priority_flags,
         version: CHUNK_VERSION,
     };
 

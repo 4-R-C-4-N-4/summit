@@ -265,6 +265,41 @@ impl MessageChunk {
     }
 }
 
+// ── Wire format for messaging service ────────────────────────────────────────
+
+/// Schema ID for message chunks. Used in ChunkHeader.schema_id.
+pub fn message_schema_id() -> [u8; 32] {
+    crate::wire::service_hash(b"summit.messaging")
+}
+
+/// JSON envelope for all Summit messages.
+///
+/// Serialized into the chunk payload. The ChunkHeader provides
+/// content_hash, schema_id, and length. This envelope provides
+/// application semantics.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageEnvelope {
+    /// Message type discriminator. Extensible — unknown types are
+    /// stored but not processed.
+    pub msg_type: String,
+
+    /// Sender's public key, hex-encoded.
+    pub sender: String,
+
+    /// Unix timestamp (seconds since epoch).
+    pub timestamp: u64,
+
+    /// Message content. Structure depends on msg_type.
+    pub payload: serde_json::Value,
+}
+
+/// Well-known message types.
+pub mod msg_types {
+    pub const TEXT: &str = "text";
+    pub const ACK: &str = "ack";
+    pub const READ: &str = "read";
+}
+
 /// Message storage entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredMessage {

@@ -30,6 +30,7 @@ pub enum TrustLevel {
 /// Registry of trusted/blocked peers.
 pub struct TrustRegistry {
     rules: Arc<DashMap<[u8; 32], TrustLevel>>,
+    auto_trust: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Default for TrustRegistry {
@@ -42,11 +43,60 @@ impl TrustRegistry {
     pub fn new() -> Self {
         Self {
             rules: Arc::new(DashMap::new()),
+            auto_trust: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
+    }
+
+    /// Apply config: auto-trust setting and pre-trusted peer keys.
+    pub fn apply_config(&self, auto_trust: bool, trusted_peers: &[String]) {
+        self.auto_trust
+            .store(auto_trust, std::sync::atomic::Ordering::Relaxed);
+
+        for hex_key in trusted_peers {
+            if let Ok(bytes) = hex::decode(hex_key) {
+                if bytes.len() == 32 {
+                    let mut key = [0u8; 32];
+                    key.copy_from_slice(&bytes);
+                    self.trust(key);
+                    tracing::info!(
+                        peer = &hex_key[..16.min(hex_key.len())],
+                        "pre-trusted peer from config"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Check if a peer should be trusted.
+    /// Returns true if auto_trust is on OR the peer is explicitly trusted.
+    pub fn is_trusted(&self, peer_pubkey: &[u8; 32]) -> bool {
+        if self
+            .auto_trust
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return true;
+        }
+        self.rules
+            .get(peer_pubkey)
+            .map(|r| matches!(*r.value(), TrustLevel::Trusted))
+            .unwrap_or(false)
     }
 
     /// Check trust level for a peer. Returns Untrusted if no rule exists.
     pub fn check(&self, public_key: &[u8; 32]) -> TrustLevel {
+        if self.auto_trust.load(std::sync::atomic::Ordering::Relaxed) {
+            // In auto-trust mode, return Trusted unless explicitly blocked
+            let level = self
+                .rules
+                .get(public_key)
+                .map(|r| *r.value())
+                .unwrap_or(TrustLevel::Trusted);
+            return if matches!(level, TrustLevel::Blocked) {
+                TrustLevel::Blocked
+            } else {
+                TrustLevel::Trusted
+            };
+        }
         self.rules
             .get(public_key)
             .map(|r| *r.value())
@@ -100,6 +150,7 @@ impl Clone for TrustRegistry {
     fn clone(&self) -> Self {
         Self {
             rules: self.rules.clone(),
+            auto_trust: self.auto_trust.clone(),
         }
     }
 }
