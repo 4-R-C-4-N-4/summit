@@ -24,7 +24,7 @@ jobs:
 
       - name: Create Release
         id: create_release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           name: Summit ${{ steps.version.outputs.VERSION }}
           generate_release_notes: true
@@ -52,8 +52,15 @@ jobs:
 
             ```bash
             docker pull ghcr.io/${{ github.repository_owner }}/summit:${{ steps.version.outputs.VERSION }}
-            docker run -it --rm --privileged --network host \
-              ghcr.io/${{ github.repository_owner }}/summit:${{ steps.version.outputs.VERSION }}
+
+            # Run daemon (replace eth0 with your interface)
+            docker run -d --name summitd --privileged --network host \
+              ghcr.io/${{ github.repository_owner }}/summit:${{ steps.version.outputs.VERSION }} eth0
+
+            # Control it
+            docker exec summitd summit-ctl status
+            docker exec summitd summit-ctl peers
+            docker exec summitd summit-ctl trust add <peer-pubkey>
             ```
 
             **Desktop UI:**
@@ -63,10 +70,12 @@ jobs:
             ### Quick Start
 
             ```bash
-            sudo summitd eth0
+            sudo summitd eth0 &
             summit-ctl status
+            summit-ctl peers
             summit-ctl trust add <peer-pubkey>
             summit-ctl send document.pdf
+            summit-ctl messages send <peer-pubkey> "hello"
             ```
 
             ### Assets
@@ -108,11 +117,12 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
+          file: Dockerfile
           push: true
-          platforms: linux/amd64
+          platforms: linux/amd64,linux/arm64
           tags: |
             ${{ steps.image.outputs.name }}:${{ needs.create-release.outputs.version }}
             ${{ steps.image.outputs.name }}:latest
@@ -131,24 +141,30 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-x64-release-${{ hashFiles('**/Cargo.lock') }}
+
       - name: Build binaries
         run: cargo build --release -p summitd -p summit-ctl
 
-      - name: Strip binaries
-        run: strip target/release/summitd target/release/summit-ctl
-
-      - name: Create archive
-        run: tar czf summit-x86_64-unknown-linux-gnu.tar.gz -C target/release summitd summit-ctl
+      - name: Strip and archive
+        run: |
+          strip target/release/summitd target/release/summit-ctl
+          tar czf summit-x86_64-unknown-linux-gnu.tar.gz \
+            -C target/release summitd summit-ctl
 
       - name: Upload to release
-        uses: actions/upload-release-asset@v1
+        uses: softprops/action-gh-release@v2
+        with:
+          files: summit-x86_64-unknown-linux-gnu.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ./summit-x86_64-unknown-linux-gnu.tar.gz
-          asset_name: summit-x86_64-unknown-linux-gnu.tar.gz
-          asset_content_type: application/gzip
 
   release-binary-arm64:
     name: Build ARM64 Binary
@@ -161,25 +177,41 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
 
-      - name: Install cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
+      - name: Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-arm64-release-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Build with cross
-        run: cross build --release --target aarch64-unknown-linux-gnu -p summitd -p summit-ctl
+      - name: Install cross-compilation toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-aarch64-linux-gnu \
+            libc6-dev-arm64-cross
 
-      - name: Create archive
-        run: tar czf summit-aarch64-unknown-linux-gnu.tar.gz -C target/aarch64-unknown-linux-gnu/release summitd summit-ctl
+      - name: Build with cross-compilation
+        run: cargo build --release --target aarch64-unknown-linux-gnu -p summitd -p summit-ctl
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+
+      - name: Archive
+        run: |
+          tar czf summit-aarch64-unknown-linux-gnu.tar.gz \
+            -C target/aarch64-unknown-linux-gnu/release summitd summit-ctl
 
       - name: Upload to release
-        uses: actions/upload-release-asset@v1
+        uses: softprops/action-gh-release@v2
+        with:
+          files: summit-aarch64-unknown-linux-gnu.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ./summit-aarch64-unknown-linux-gnu.tar.gz
-          asset_name: summit-aarch64-unknown-linux-gnu.tar.gz
-          asset_content_type: application/gzip
 
   release-ui:
     name: Build Desktop UI
@@ -194,11 +226,13 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: zenith/package-lock.json
 
       - name: Build UI
         run: |
           cd zenith
-          npm i
+          npm ci
           npm run build:electron
 
       - name: Find AppImage
@@ -208,11 +242,8 @@ jobs:
           echo "path=$APPIMAGE" >> $GITHUB_OUTPUT
 
       - name: Upload AppImage
-        uses: actions/upload-release-asset@v1
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.appimage.outputs.path }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ${{ steps.appimage.outputs.path }}
-          asset_name: zenith-linux.AppImage
-          asset_content_type: application/octet-stream
