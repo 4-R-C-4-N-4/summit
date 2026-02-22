@@ -69,7 +69,6 @@ pub fn service_hash(name: &[u8]) -> ServiceHash {
 }
 
 /// Pre-computed service hash functions. Recomputed on each call (no allocation).
-
 pub fn file_transfer_hash() -> ServiceHash {
     service_hash(b"summit.file_transfer")
 }
