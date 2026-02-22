@@ -676,14 +676,11 @@ async fn main() -> Result<()> {
         let reassembler_ref = reassembler.clone();
         let trust_ref = trust_registry.clone();
         let buffer_ref = untrusted_buffer.clone();
-        let message_store_ref = message_store.clone();
         let dispatcher_ref = dispatcher.clone();
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(1));
             let mut seen_sessions = std::collections::HashSet::new();
-
-            use summit_core::message::MessageChunk;
 
             loop {
                 interval.tick().await;
@@ -704,7 +701,6 @@ async fn main() -> Result<()> {
                         let peer_pubkey = active.meta.peer_pubkey;
                         let trust = trust_ref.clone();
                         let buffer = buffer_ref.clone();
-                        let message_store = message_store_ref.clone();
                         let dispatcher = dispatcher_ref.clone();
 
                         // Create channel for received chunks
@@ -743,26 +739,6 @@ async fn main() -> Result<()> {
                                     payload_len = chunk.payload.len(),
                                     "chunk received"
                                 );
-
-                                if chunk.type_tag == 4 {
-                                    // Message chunk
-                                    match MessageChunk::from_bytes(&chunk.payload) {
-                                        Ok(message) => {
-                                            tracing::info!(
-                                                msg_id = hex::encode(message.msg_id),
-                                                from = hex::encode(&message.sender[..8]),
-                                                msg_type = ?message.msg_type,
-                                                "message received"
-                                            );
-
-                                            // Store message
-                                            message_store.add(message.sender, message.clone());
-                                        }
-                                        Err(e) => {
-                                            tracing::warn!(error = %e, "failed to parse message");
-                                        }
-                                    }
-                                }
 
                                 // Handle file metadata chunks (type_tag 3)
                                 if chunk.type_tag == 3 {

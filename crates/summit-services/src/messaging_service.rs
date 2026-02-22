@@ -1,9 +1,48 @@
 //! Messaging service — receives JSON message chunks and stores them.
+//!
+//! `MessageEnvelope` is the JSON wire format for all messaging chunks.
+//! It is defined here because this service is the sole parser of that
+//! format on the wire; `summit-core` has no opinion about chunk payloads.
 
 use crate::message_store::MessageStore;
 use crate::service::ChunkService;
-use summit_core::message::{message_schema_id, MessageEnvelope};
-use summit_core::wire::{ChunkHeader, Contract, ServiceHash};
+use serde::{Deserialize, Serialize};
+use summit_core::wire::{service_hash, ChunkHeader, Contract, ServiceHash};
+
+// ── Wire format ───────────────────────────────────────────────────────────────
+
+/// JSON envelope — the payload of every messaging chunk.
+///
+/// Senders populate `msg_id` as `hex(blake3(sender_bytes || timestamp_le ||
+/// payload_bytes))` for deduplication. Receivers store unknown `msg_type`
+/// values verbatim without processing them.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageEnvelope {
+    /// Deduplication id: `hex(blake3(sender_bytes || timestamp_le || payload_bytes))`.
+    pub msg_id: String,
+    /// Well-known type string (see [`msg_types`]). Extensible.
+    pub msg_type: String,
+    /// Sender public key, hex-encoded.
+    pub sender: String,
+    /// Unix timestamp in milliseconds.
+    pub timestamp: u64,
+    /// Type-specific content. Structure is defined by `msg_type`.
+    pub payload: serde_json::Value,
+}
+
+/// Well-known `msg_type` strings.
+pub mod msg_types {
+    pub const TEXT: &str = "text";
+    pub const ACK: &str = "ack";
+    pub const READ: &str = "read";
+}
+
+/// Schema identifier for messaging chunks (used in `ChunkHeader.schema_id`).
+pub fn messaging_schema_id() -> ServiceHash {
+    service_hash(b"summit.messaging")
+}
+
+// ── Service ───────────────────────────────────────────────────────────────────
 
 pub struct MessagingService {
     store: MessageStore,
@@ -17,7 +56,7 @@ impl MessagingService {
 
 impl ChunkService for MessagingService {
     fn service_hash(&self) -> ServiceHash {
-        message_schema_id()
+        messaging_schema_id()
     }
 
     fn contract(&self) -> Contract {
@@ -53,7 +92,7 @@ impl ChunkService for MessagingService {
             "message received"
         );
 
-        self.store.add_from_envelope(peer_pubkey, &envelope)?;
+        self.store.add(*peer_pubkey, envelope);
 
         Ok(())
     }

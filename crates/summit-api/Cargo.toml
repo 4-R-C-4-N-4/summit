@@ -11,6 +11,7 @@ tokio = { version = "1", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tower-http = { version = "0.6.8", features = ["cors"] }
+blake3 = "1.5"
 bytes = "1"
 hex = "0.4"
 tracing = "0.1"

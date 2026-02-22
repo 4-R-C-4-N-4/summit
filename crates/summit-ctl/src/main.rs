@@ -37,8 +37,9 @@ struct PeerInfo {
     public_key: String,
     addr: String,
     session_port: u16,
-    chunk_port: u16,
-    contract: u8,
+    services: Vec<String>,
+    service_count: usize,
+    is_complete: bool,
     version: u32,
     last_seen_secs: u64,
     trust_level: String,
@@ -202,23 +203,28 @@ async fn cmd_peers(port: u16) -> Result<()> {
     println!("═══════════════════════════════════════");
 
     for p in &resp.peers {
-        let contract_name = match p.contract {
-            0x01 => "Realtime",
-            0x02 => "Bulk",
-            0x03 => "Background",
-            _ => "Unknown",
-        };
-
         let trust_icon = match p.trust_level.as_str() {
             "Trusted" => "✓",
             "Blocked" => "✗",
             _ => "?",
         };
 
+        let complete_marker = if p.is_complete { "" } else { " (incomplete)" };
+
         println!("  ┌─ {} {}...", trust_icon, &p.public_key[..16]);
         println!("  │  addr         : {}", p.addr);
         println!("  │  session port : {}", p.session_port);
-        println!("  │  contract     : {}", contract_name);
+        println!(
+            "  │  services     : {}/{}{} — [{}]",
+            p.services.len(),
+            p.service_count,
+            complete_marker,
+            p.services
+                .iter()
+                .map(|s| s[..8].to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
         println!("  │  trust        : {}", p.trust_level);
         if p.buffered_chunks > 0 {
             println!("  │  buffered     : {} chunks", p.buffered_chunks);
@@ -525,6 +531,80 @@ async fn cmd_schema_list(port: u16) -> Result<()> {
     Ok(())
 }
 
+// ── Messages ──────────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct MessagesResponse {
+    peer_pubkey: String,
+    messages: Vec<MessageJson>,
+}
+
+#[derive(Deserialize)]
+#[allow(dead_code)]
+struct MessageJson {
+    msg_id: String,
+    from: String,
+    to: String,
+    msg_type: String,
+    timestamp: u64,
+    content: serde_json::Value,
+}
+
+#[derive(Serialize)]
+struct SendMessageRequest {
+    to: String,
+    text: String,
+}
+
+#[derive(Deserialize)]
+struct SendMessageResponse {
+    msg_id: String,
+    timestamp: u64,
+}
+
+async fn cmd_messages(port: u16, peer_pubkey: &str) -> Result<()> {
+    let resp: MessagesResponse =
+        get_json(&format!("{}/messages/{}", base_url(port), peer_pubkey)).await?;
+
+    if resp.messages.is_empty() {
+        println!("No messages from {}...", &resp.peer_pubkey[..16.min(resp.peer_pubkey.len())]);
+        return Ok(());
+    }
+
+    println!("═══════════════════════════════════════");
+    println!("  Messages from {}...", &resp.peer_pubkey[..16.min(resp.peer_pubkey.len())]);
+    println!("═══════════════════════════════════════");
+
+    for m in &resp.messages {
+        println!("  ┌─ {} [{}]", m.msg_type, m.timestamp);
+        println!("  │  from : {}...", &m.from[..16.min(m.from.len())]);
+        println!("  │  id   : {}...", &m.msg_id[..16.min(m.msg_id.len())]);
+        if let Some(text) = m.content.get("text").and_then(|v| v.as_str()) {
+            println!("  └─ {}", text);
+        } else {
+            println!("  └─ {:?}", m.content);
+        }
+    }
+
+    Ok(())
+}
+
+async fn cmd_messages_send(port: u16, to: &str, text: &str) -> Result<()> {
+    let req = SendMessageRequest {
+        to: to.to_string(),
+        text: text.to_string(),
+    };
+
+    let resp: SendMessageResponse =
+        post_json_body(&format!("{}/messages/send", base_url(port)), &req).await?;
+
+    println!("Message sent:");
+    println!("  ID        : {}...", &resp.msg_id[..16.min(resp.msg_id.len())]);
+    println!("  Timestamp : {}", resp.timestamp);
+
+    Ok(())
+}
+
 fn print_usage() {
     println!("Usage: summit-ctl [--port <port>] <command>");
     println!();
@@ -560,6 +640,9 @@ fn print_usage() {
     println!("  sessions drop <id>  Drop a specific session");
     println!("  sessions inspect <id> Show detailed session info");
     println!("  schema list         List all known schemas");
+    println!("  messages <pubkey>   List messages from a peer");
+    println!("  messages send <pubkey> <text>");
+    println!("                      Send a text message to a peer");
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -630,6 +713,8 @@ async fn main() -> Result<()> {
         ["trust", "add", pubkey] => cmd_trust_add(port, pubkey).await,
         ["trust", "block", pubkey] => cmd_trust_block(port, pubkey).await,
         ["trust", "pending"] => cmd_trust_pending(port).await,
+        ["messages", peer] => cmd_messages(port, peer).await,
+        ["messages", "send", to, text] => cmd_messages_send(port, to, text).await,
         ["help"] | ["--help"] | ["-h"] => {
             print_usage();
             Ok(())

@@ -4,7 +4,4 @@
 
 pub mod config;
 pub mod crypto;
-pub mod message;
 pub mod wire;
-
-pub use message::{MessageChunk, MessageContent, MessageType};

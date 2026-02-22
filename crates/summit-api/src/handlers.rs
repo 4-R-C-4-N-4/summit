@@ -6,13 +6,12 @@ use axum::{extract::State, Json};
 use serde::{Deserialize, Serialize};
 
 use summit_services::{
-    ChunkCache, KnownSchema, MessageStore, OutgoingChunk, PeerRegistry, SendTarget, SessionTable,
-    TrustRegistry, UntrustedBuffer,
+    messaging_schema_id, ChunkCache, KnownSchema, MessageEnvelope, MessageStore, OutgoingChunk,
+    PeerRegistry, SendTarget, SessionTable, TrustRegistry, UntrustedBuffer,
 };
 
 use std::sync::Arc;
 use summit_core::crypto::Keypair;
-use summit_core::message::MessageChunk;
 
 #[derive(Clone)]
 pub struct ApiState {
@@ -314,12 +313,12 @@ pub async fn handle_get_messages(
     let messages_json: Vec<MessageJson> = messages
         .into_iter()
         .map(|m| MessageJson {
-            msg_id: hex::encode(m.msg_id),
-            from: hex::encode(m.sender),
-            to: hex::encode(m.recipient),
-            msg_type: format!("{:?}", m.msg_type),
+            msg_id: m.msg_id,
+            from: m.sender,
+            to: peer_pubkey.clone(),
+            msg_type: m.msg_type,
             timestamp: m.timestamp,
-            content: serde_json::to_value(&m.content).unwrap(),
+            content: m.payload,
         })
         .collect();
 
@@ -365,24 +364,44 @@ pub async fn handle_send_message(
     let mut to = [0u8; 32];
     to.copy_from_slice(&to_bytes);
 
-    // Use actual keypair public key
     let from = state.keypair.public;
 
-    // Create message
-    let message = MessageChunk::text(from, to, req.text);
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
 
-    // Serialize to chunk payload
-    let payload = message.to_bytes();
+    let payload_value = serde_json::json!({ "text": req.text });
 
-    // Create outgoing chunk with type_tag 4 (message)
-    let chunk = OutgoingChunk {
-        type_tag: 4,
-        schema_id: KnownSchema::Message.id(),
-        payload: bytes::Bytes::from(payload),
-        priority_flags: 0x02, // Bulk
+    // msg_id = hex(blake3(sender_bytes || timestamp_le || payload_bytes))
+    let payload_bytes = serde_json::to_vec(&payload_value).unwrap();
+    let msg_id = {
+        let mut h = blake3::Hasher::new();
+        h.update(&from);
+        h.update(&timestamp.to_le_bytes());
+        h.update(&payload_bytes);
+        hex::encode(h.finalize().as_bytes())
     };
 
-    // Send to peer
+    let envelope = MessageEnvelope {
+        msg_id: msg_id.clone(),
+        msg_type: summit_services::msg_types::TEXT.to_string(),
+        sender: hex::encode(from),
+        timestamp,
+        payload: payload_value,
+    };
+
+    let raw = serde_json::to_vec(&envelope).map_err(|e| {
+        (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+    })?;
+
+    let chunk = OutgoingChunk {
+        type_tag: 0,
+        schema_id: messaging_schema_id(),
+        payload: bytes::Bytes::from(raw),
+        priority_flags: 0x02,
+    };
+
     let target = SendTarget::Peer { public_key: to };
     state.chunk_tx.send((target, chunk)).map_err(|_| {
         (
@@ -391,12 +410,12 @@ pub async fn handle_send_message(
         )
     })?;
 
-    // Store locally
-    state.message_store.add(to, message.clone());
+    // Store locally so the sender can see their own sent messages
+    state.message_store.add(to, envelope);
 
     Ok(Json(SendMessageResponse {
-        msg_id: hex::encode(message.msg_id),
-        timestamp: message.timestamp,
+        msg_id,
+        timestamp,
     }))
 }
 

@@ -1,14 +1,11 @@
+use crate::messaging_service::MessageEnvelope;
 use dashmap::DashMap;
 use std::sync::Arc;
-use summit_core::message::{
-    MessageChunk, MessageContent, MessageEnvelope, MessageMetadata, MessageType,
-};
 
-/// In-memory message store
+/// In-memory store for received message envelopes, keyed by sender pubkey.
 #[derive(Clone, Default)]
 pub struct MessageStore {
-    /// Messages per peer: peer_pubkey -> Vec<MessageChunk>
-    messages: Arc<DashMap<[u8; 32], Vec<MessageChunk>>>,
+    messages: Arc<DashMap<[u8; 32], Vec<MessageEnvelope>>>,
 }
 
 impl MessageStore {
@@ -18,21 +15,24 @@ impl MessageStore {
         }
     }
 
-    /// Add a message
-    pub fn add(&self, peer_pubkey: [u8; 32], message: MessageChunk) {
-        self.messages.entry(peer_pubkey).or_default().push(message);
+    /// Store an envelope received from `peer_pubkey`.
+    pub fn add(&self, peer_pubkey: [u8; 32], envelope: MessageEnvelope) {
+        self.messages
+            .entry(peer_pubkey)
+            .or_default()
+            .push(envelope);
     }
 
-    /// Get all messages with a peer
-    pub fn get(&self, peer_pubkey: &[u8; 32]) -> Vec<MessageChunk> {
+    /// Get all envelopes received from `peer_pubkey`.
+    pub fn get(&self, peer_pubkey: &[u8; 32]) -> Vec<MessageEnvelope> {
         self.messages
             .get(peer_pubkey)
             .map(|msgs| msgs.clone())
             .unwrap_or_default()
     }
 
-    /// Get messages since timestamp
-    pub fn get_since(&self, peer_pubkey: &[u8; 32], since: u64) -> Vec<MessageChunk> {
+    /// Get envelopes received from `peer_pubkey` with `timestamp > since`.
+    pub fn get_since(&self, peer_pubkey: &[u8; 32], since: u64) -> Vec<MessageEnvelope> {
         self.messages
             .get(peer_pubkey)
             .map(|msgs| {
@@ -44,7 +44,7 @@ impl MessageStore {
             .unwrap_or_default()
     }
 
-    /// Count messages with a peer
+    /// Count envelopes stored for `peer_pubkey`.
     pub fn count(&self, peer_pubkey: &[u8; 32]) -> usize {
         self.messages
             .get(peer_pubkey)
@@ -52,71 +52,7 @@ impl MessageStore {
             .unwrap_or(0)
     }
 
-    /// Store a message from a parsed JSON envelope.
-    ///
-    /// Converts the MessageEnvelope (JSON wire format) into a MessageChunk
-    /// (internal storage format) and stores it keyed by peer_pubkey.
-    pub fn add_from_envelope(
-        &self,
-        peer_pubkey: &[u8; 32],
-        envelope: &MessageEnvelope,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        // Derive msg_id from the envelope content
-        let envelope_bytes = serde_json::to_vec(envelope)?;
-        let msg_id = summit_core::crypto::hash(&envelope_bytes);
-
-        // Parse sender hex back to [u8; 32]
-        let sender_bytes = hex::decode(&envelope.sender)?;
-        let mut sender = [0u8; 32];
-        if sender_bytes.len() == 32 {
-            sender.copy_from_slice(&sender_bytes);
-        }
-
-        // Map msg_type string to MessageType enum
-        let msg_type = match envelope.msg_type.as_str() {
-            "text" | "ack" | "read" | _ => MessageType::Text,
-        };
-
-        // Extract text content from payload
-        let content = match envelope.msg_type.as_str() {
-            "text" => {
-                let body = envelope
-                    .payload
-                    .get("body")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                MessageContent::Text { text: body }
-            }
-            _ => {
-                // Store raw JSON for unknown types
-                MessageContent::Text {
-                    text: envelope.payload.to_string(),
-                }
-            }
-        };
-
-        let chunk = MessageChunk {
-            msg_id,
-            msg_type,
-            timestamp: envelope.timestamp,
-            sender,
-            recipient: *peer_pubkey, // we are the recipient
-            content,
-            metadata: MessageMetadata {
-                mime_type: None,
-                size_bytes: None,
-                filename: None,
-                dimensions: None,
-                duration_secs: None,
-            },
-        };
-
-        self.add(*peer_pubkey, chunk);
-        Ok(())
-    }
-
-    /// Clear all messages
+    /// Clear all stored messages.
     pub fn clear(&self) {
         self.messages.clear();
     }
@@ -125,25 +61,14 @@ impl MessageStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use summit_core::message::{MessageContent, MessageMetadata, MessageType};
 
-    fn make_msg(timestamp: u64) -> MessageChunk {
-        MessageChunk {
-            msg_id: [0u8; 32],
-            msg_type: MessageType::Text,
+    fn make_envelope(timestamp: u64) -> MessageEnvelope {
+        MessageEnvelope {
+            msg_id: format!("id-{}", timestamp),
+            msg_type: "text".into(),
+            sender: "a".repeat(64),
             timestamp,
-            sender: [1u8; 32],
-            recipient: [2u8; 32],
-            content: MessageContent::Text {
-                text: "hello".into(),
-            },
-            metadata: MessageMetadata {
-                mime_type: None,
-                size_bytes: None,
-                filename: None,
-                dimensions: None,
-                duration_secs: None,
-            },
+            payload: serde_json::json!({ "text": "hello" }),
         }
     }
 
@@ -159,8 +84,8 @@ mod tests {
     fn add_and_get_roundtrip() {
         let store = MessageStore::new();
         let peer = [1u8; 32];
-        store.add(peer, make_msg(100));
-        store.add(peer, make_msg(200));
+        store.add(peer, make_envelope(100));
+        store.add(peer, make_envelope(200));
 
         let msgs = store.get(&peer);
         assert_eq!(msgs.len(), 2);
@@ -172,9 +97,9 @@ mod tests {
     fn get_since_filters_by_timestamp() {
         let store = MessageStore::new();
         let peer = [1u8; 32];
-        store.add(peer, make_msg(100));
-        store.add(peer, make_msg(200));
-        store.add(peer, make_msg(300));
+        store.add(peer, make_envelope(100));
+        store.add(peer, make_envelope(200));
+        store.add(peer, make_envelope(300));
 
         let msgs = store.get_since(&peer, 150);
         assert_eq!(msgs.len(), 2);
@@ -187,9 +112,9 @@ mod tests {
         let store = MessageStore::new();
         let peer = [1u8; 32];
         assert_eq!(store.count(&peer), 0);
-        store.add(peer, make_msg(100));
+        store.add(peer, make_envelope(100));
         assert_eq!(store.count(&peer), 1);
-        store.add(peer, make_msg(200));
+        store.add(peer, make_envelope(200));
         assert_eq!(store.count(&peer), 2);
     }
 
@@ -198,8 +123,8 @@ mod tests {
         let store = MessageStore::new();
         let peer_a = [1u8; 32];
         let peer_b = [2u8; 32];
-        store.add(peer_a, make_msg(100));
-        store.add(peer_b, make_msg(200));
+        store.add(peer_a, make_envelope(100));
+        store.add(peer_b, make_envelope(200));
 
         store.clear();
         assert_eq!(store.count(&peer_a), 0);
