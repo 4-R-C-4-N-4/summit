@@ -736,6 +736,31 @@ pub async fn handle_services(State(state): State<ApiState>) -> Json<ServicesResp
     Json(ServicesResponse { services })
 }
 
+// ── /compute/tasks (GET) ──────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct ComputeAllTasksResponse {
+    pub tasks: Vec<ComputeTaskJson>,
+}
+
+pub async fn handle_compute_all_tasks(
+    State(state): State<ApiState>,
+) -> Json<ComputeAllTasksResponse> {
+    let tasks = state
+        .compute_store
+        .all_tasks()
+        .into_iter()
+        .map(|t| ComputeTaskJson {
+            task_id: t.submit.task_id.clone(),
+            status: format!("{:?}", t.status),
+            submitted_at: t.submitted_at,
+            updated_at: t.updated_at,
+        })
+        .collect();
+
+    Json(ComputeAllTasksResponse { tasks })
+}
+
 // ── /compute/tasks/{peer_pubkey} (GET) ────────────────────────────────────────
 
 #[derive(Serialize)]

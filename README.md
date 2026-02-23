@@ -74,6 +74,28 @@ summit-ctl messages send <pubkey> 'hello world'
 summit-ctl compute submit <pubkey> '{"cmd":"echo","args":["hi"]}'
 summit-ctl compute tasks <pubkey>
 ```
+  # ── Machine A (submitter) ──────────────────────────────
+
+  # 1. Verify both daemons see each other
+  summit-ctl peers
+
+  # 2. Confirm compute is enabled
+  summit-ctl services
+
+  # 3. Copy Machine B's public key from peers output, submit a task
+  summit-ctl compute submit <B_pubkey> '{"cmd":"echo","args":["hello"]}'
+
+  # 4. Check task status — should now show "Queued" (ack received from B)
+  summit-ctl compute tasks
+
+
+  # ── Machine B (receiver) ───────────────────────────────
+
+  # 1. List ALL incoming compute tasks (no pubkey needed)
+  summit-ctl compute tasks
+
+  # 2. Or filter by sender
+  summit-ctl compute tasks <A_pubkey>
 
 ## Design
 

@@ -3,7 +3,7 @@
 ## Arch Linux
 
 ### System Requirements
-- **OS:** Arch Linux (rolling release)
+- **OS:** Linux, designed for Arch (rolling release)
 - **Kernel:** 5.10+ (for io_uring support)
 - **Architecture:** x86_64 or aarch64
 - **RAM:** 512MB minimum, 1GB recommended

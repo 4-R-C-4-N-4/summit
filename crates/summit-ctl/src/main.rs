@@ -698,6 +698,34 @@ async fn cmd_compute_tasks(port: u16, peer_pubkey: &str) -> Result<()> {
     Ok(())
 }
 
+#[derive(Deserialize)]
+struct ComputeAllTasksResponse {
+    tasks: Vec<ComputeTaskJson>,
+}
+
+async fn cmd_compute_tasks_all(port: u16) -> Result<()> {
+    let resp: ComputeAllTasksResponse =
+        get_json(&format!("{}/compute/tasks", base_url(port))).await?;
+
+    if resp.tasks.is_empty() {
+        println!("No compute tasks.");
+        return Ok(());
+    }
+
+    println!("═══════════════════════════════════════");
+    println!("  All Compute Tasks ({})", resp.tasks.len());
+    println!("═══════════════════════════════════════");
+
+    for t in &resp.tasks {
+        println!("  ┌─ {}...", &t.task_id[..16.min(t.task_id.len())]);
+        println!("  │  status       : {}", t.status);
+        println!("  │  submitted_at : {}", t.submitted_at);
+        println!("  └─ updated_at   : {}", t.updated_at);
+    }
+
+    Ok(())
+}
+
 async fn cmd_compute_submit(port: u16, to: &str, payload_str: &str) -> Result<()> {
     let payload: serde_json::Value =
         serde_json::from_str(payload_str).context("payload must be valid JSON")?;
@@ -750,7 +778,8 @@ fn print_usage() {
     println!("  messages send <pubkey> <text>   Send a text message to a peer");
     println!();
     println!("Compute");
-    println!("  compute tasks <pubkey>          List compute tasks from a peer");
+    println!("  compute tasks                   List all compute tasks");
+    println!("  compute tasks <pubkey>          List compute tasks from a specific peer");
     println!("  compute submit <pubkey> <json>  Submit a compute task to a peer");
     println!();
     println!("Cache & Schema");
@@ -845,6 +874,7 @@ async fn main() -> Result<()> {
         ["trust", "pending"] => cmd_trust_pending(port).await,
         ["messages", peer] => cmd_messages(port, peer).await,
         ["messages", "send", to, text] => cmd_messages_send(port, to, text).await,
+        ["compute", "tasks"] => cmd_compute_tasks_all(port).await,
         ["compute", "tasks", peer] => cmd_compute_tasks(port, peer).await,
         ["compute", "submit", to, payload] => cmd_compute_submit(port, to, payload).await,
         ["schema", "list"] | ["schema"] => cmd_schema_list(port).await,

@@ -426,6 +426,10 @@ async fn main() -> Result<()> {
                                     summit_core::wire::service_hash(b"summit.messaging"),
                                     ServiceOnSession { contract: Contract::Bulk, chunk_port: 0 },
                                 );
+                                active_services.insert(
+                                    summit_core::wire::service_hash(b"summit.compute"),
+                                    ServiceOnSession { contract: Contract::Bulk, chunk_port: 0 },
+                                );
 
                                 sessions.insert(session_id, ActiveSession {
                                     meta: SessionMeta {
@@ -480,6 +484,10 @@ async fn main() -> Result<()> {
                                 );
                                 active_services_r.insert(
                                     summit_core::wire::service_hash(b"summit.messaging"),
+                                    ServiceOnSession { contract: Contract::Bulk, chunk_port: 0 },
+                                );
+                                active_services_r.insert(
+                                    summit_core::wire::service_hash(b"summit.compute"),
                                     ServiceOnSession { contract: Contract::Bulk, chunk_port: 0 },
                                 );
 
@@ -660,6 +668,10 @@ async fn main() -> Result<()> {
     }
     let untrusted_buffer = UntrustedBuffer::new();
 
+    // Outbound chunk queue - HTTP endpoint pushes, send worker pulls.
+    // Created early so the compute service can send ACKs via chunk_tx.
+    let (chunk_tx, mut chunk_rx) = mpsc::unbounded_channel::<(SendTarget, chunk::OutgoingChunk)>();
+
     // Service dispatcher — routes chunks to the appropriate service
     let dispatcher = {
         use dispatch::ServiceDispatcher;
@@ -679,6 +691,7 @@ async fn main() -> Result<()> {
             let compute_svc = Arc::new(ComputeService::new(
                 compute_store.clone(),
                 config.services.compute_settings.clone(),
+                chunk_tx.clone(),
             ));
             d.register(compute_svc as Arc<dyn ChunkService>);
         }
@@ -809,9 +822,6 @@ async fn main() -> Result<()> {
             }
         })
     };
-
-    // Outbound chunk queue - HTTP endpoint pushes, send worker pulls
-    let (chunk_tx, mut chunk_rx) = mpsc::unbounded_channel::<(SendTarget, chunk::OutgoingChunk)>();
 
     // Send worker - pulls chunks from queue, applies QoS, sends to all sessions
     let send_worker = {

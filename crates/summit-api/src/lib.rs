@@ -33,6 +33,7 @@ pub async fn serve(state: ApiState, port: u16) -> anyhow::Result<()> {
         )
         .route("/messages/send", post(handlers::handle_send_message))
         .route("/services", get(handlers::handle_services))
+        .route("/compute/tasks", get(handlers::handle_compute_all_tasks))
         .route(
             "/compute/tasks/{peer_pubkey}",
             get(handlers::handle_compute_tasks),

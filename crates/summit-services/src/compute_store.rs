@@ -97,6 +97,11 @@ impl ComputeStore {
     pub fn get_task(&self, task_id: &str) -> Option<ComputeTask> {
         self.tasks.get(task_id).map(|t| t.clone())
     }
+
+    /// Return all tasks regardless of peer.
+    pub fn all_tasks(&self) -> Vec<ComputeTask> {
+        self.tasks.iter().map(|entry| entry.value().clone()).collect()
+    }
 }
 
 #[cfg(test)]
