@@ -1,6 +1,6 @@
 # Summit
 
-Peer-to-peer encrypted communication for Linux. Direct device-to-device messaging and file transfer over IPv6 link-local -- no routers, no DNS, no infrastructure.
+Peer-to-peer encrypted communication for Linux. Direct device-to-device computing, messaging, and file transfer over IPv6 link-local -- no routers, no DNS, no infrastructure.
 
 ## How It Works
 
@@ -15,7 +15,6 @@ Devices discover each other via IPv6 multicast, establish encrypted sessions usi
 | `summit-core` | Wire format, cryptography (Noise_XX, BLAKE3), message types |
 | `summit-services` | Service layer -- cache, trust registry, QoS, file transfer |
 | `summit-api` | HTTP/REST API (Axum) for daemon control |
-| `libsummit` | Application library with C FFI |
 | `zenith` | Desktop UI (Electron) |
 
 ## Installation
@@ -71,6 +70,9 @@ summit-ctl files                      # list received files
 summit-ctl cache                      # cache stats
 summit-ctl sessions inspect <id>      # session details
 summit-ctl shutdown                   # stop daemon
+summit-ctl messages send <pubkey> 'hello world'
+summit-ctl compute submit <pubkey> '{"cmd":"echo","args":["hi"]}'
+summit-ctl compute tasks <pubkey>
 ```
 
 ## Design
