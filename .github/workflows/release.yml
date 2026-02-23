@@ -122,7 +122,7 @@ jobs:
           context: .
           file: Dockerfile
           push: true
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           tags: |
             ${{ steps.image.outputs.name }}:${{ needs.create-release.outputs.version }}
             ${{ steps.image.outputs.name }}:latest
