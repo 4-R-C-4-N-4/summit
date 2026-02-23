@@ -939,6 +939,447 @@ fn test_service_config_disable_messaging() {
     result.unwrap();
 }
 
+/// End-to-end compute task submission: A submits a simple echo task to B via the
+/// REST API. The task is stored locally on A immediately, then delivered as a
+/// bulk chunk over the encrypted session. B receives it and stores it in its
+/// ComputeStore. Both sides are verified, plus the `summit-ctl compute` commands
+/// are smoke-tested end-to-end.
+#[test]
+fn test_compute_task_simple() {
+    if !netns_available() {
+        eprintln!("SKIP: netns not available");
+        return;
+    }
+    if !binaries_available() {
+        eprintln!("SKIP: binaries not built");
+        return;
+    }
+
+    let _lock = DAEMON_LOCK.lock().unwrap();
+    cleanup_summitd();
+
+    let env = [
+        ("SUMMIT_TRUST__AUTO_TRUST", "true"),
+        ("SUMMIT_SERVICES__COMPUTE", "true"),
+    ];
+    let mut node_a = spawn_daemon(NS_A, VETH_A, &env);
+    let mut node_b = spawn_daemon(NS_B, VETH_B, &env);
+
+    let result = (|| -> Result<()> {
+        wait_for_api(NS_A, 40)?;
+        wait_for_api(NS_B, 40)?;
+
+        println!("Waiting for peer discovery and session establishment...");
+        thread::sleep(Duration::from_secs(8));
+
+        assert!(
+            !api_get(NS_A, "/status")?["sessions"]
+                .as_array()
+                .unwrap()
+                .is_empty(),
+            "no session on A before compute test"
+        );
+
+        let pubkey_b = get_peer_pubkey(NS_A)?;
+        let pubkey_a = get_peer_pubkey(NS_B)?;
+        println!("B pubkey: {}...", &pubkey_b[..16]);
+        println!("A pubkey: {}...", &pubkey_a[..16]);
+
+        // Submit a simple echo task: A -> B
+        let body = serde_json::json!({
+            "to": pubkey_b,
+            "payload": {
+                "op": "echo",
+                "input": "hello from node A"
+            }
+        })
+        .to_string();
+
+        let submit_resp = api_post(NS_A, "/compute/submit", &body)?;
+        let task_id = submit_resp["task_id"]
+            .as_str()
+            .context("submit response missing task_id")?
+            .to_string();
+        assert!(
+            submit_resp["timestamp"].is_number(),
+            "submit response missing timestamp"
+        );
+        println!("Task submitted: {}...", &task_id[..16]);
+
+        // A stores the task locally at submit time — no delivery wait needed
+        let tasks_on_a = api_get(NS_A, &format!("/compute/tasks/{}", pubkey_b))?;
+        let a_tasks = tasks_on_a["tasks"].as_array().context("no tasks array on A")?;
+        assert!(!a_tasks.is_empty(), "task not in A's local store after submit");
+        assert_eq!(
+            a_tasks[0]["task_id"].as_str().unwrap(),
+            task_id,
+            "task_id mismatch in A's local store"
+        );
+        assert_eq!(
+            a_tasks[0]["status"].as_str().unwrap(),
+            "Queued",
+            "unexpected initial status on A"
+        );
+        println!("Task confirmed in A's local store");
+
+        println!("Waiting for chunk delivery to B...");
+        thread::sleep(Duration::from_secs(4));
+
+        // B received the chunk and stored the task keyed by A's pubkey
+        let tasks_on_b = api_get(NS_B, &format!("/compute/tasks/{}", pubkey_a))?;
+        let b_tasks = tasks_on_b["tasks"]
+            .as_array()
+            .context("no tasks array on B")?;
+        assert!(!b_tasks.is_empty(), "echo task not received on B after 4s");
+        assert_eq!(
+            b_tasks[0]["task_id"].as_str().unwrap(),
+            task_id,
+            "task_id mismatch on B — payload may have been corrupted in transit"
+        );
+        assert_eq!(
+            b_tasks[0]["status"].as_str().unwrap(),
+            "Queued",
+            "expected Queued on B, got {}",
+            b_tasks[0]["status"]
+        );
+        println!(
+            "Echo task {}... arrived on B with status={}",
+            &task_id[..16],
+            b_tasks[0]["status"]
+        );
+
+        // summit-ctl compute tasks: check B's task list shows the task from A
+        let ctl_tasks = netns_exec(
+            NS_B,
+            &[
+                summit_ctl_path().to_str().unwrap(),
+                "compute",
+                "tasks",
+                &pubkey_a,
+            ],
+        )?;
+        assert!(
+            ctl_tasks.contains(&task_id[..16]),
+            "summit-ctl compute tasks missing task_id: {}",
+            ctl_tasks
+        );
+        println!("summit-ctl compute tasks:\n{}", ctl_tasks);
+
+        // summit-ctl compute submit: B submits a task back to A via the CLI
+        let ctl_submit = netns_exec(
+            NS_B,
+            &[
+                summit_ctl_path().to_str().unwrap(),
+                "compute",
+                "submit",
+                &pubkey_a,
+                r#"{"op":"echo","input":"hello from node B"}"#,
+            ],
+        )?;
+        assert!(
+            ctl_submit.contains("Task ID"),
+            "unexpected compute submit output: {}",
+            ctl_submit
+        );
+        println!("summit-ctl compute submit:\n{}", ctl_submit);
+
+        // summit-ctl services: compute should show as enabled on both nodes
+        let ctl_services_a = netns_exec(
+            NS_A,
+            &[summit_ctl_path().to_str().unwrap(), "services"],
+        )?;
+        assert!(
+            ctl_services_a.contains("compute") && ctl_services_a.contains("enabled"),
+            "compute not shown as enabled on A: {}",
+            ctl_services_a
+        );
+        println!("summit-ctl services (A):\n{}", ctl_services_a);
+
+        println!("Verified simple compute task end-to-end");
+        Ok(())
+    })();
+
+    node_a.kill().ok();
+    node_b.kill().ok();
+    cleanup_summitd();
+
+    result.unwrap();
+}
+
+/// End-to-end compute task with a complex multi-step data pipeline payload.
+///
+/// Verifies that a deeply nested JSON task definition survives the full
+/// serialise → chunk → encrypt → transmit → decrypt → deserialise round-trip
+/// intact. The task_id is a BLAKE3 hash of the sender, timestamp, and the
+/// complete payload, so an id match on B proves byte-level payload integrity.
+///
+/// Also submits a second task (matrix multiply) to verify the store handles
+/// multiple concurrent tasks from the same peer correctly.
+#[test]
+fn test_compute_task_challenging() {
+    if !netns_available() {
+        eprintln!("SKIP: netns not available");
+        return;
+    }
+    if !binaries_available() {
+        eprintln!("SKIP: binaries not built");
+        return;
+    }
+
+    let _lock = DAEMON_LOCK.lock().unwrap();
+    cleanup_summitd();
+
+    let env = [
+        ("SUMMIT_TRUST__AUTO_TRUST", "true"),
+        ("SUMMIT_SERVICES__COMPUTE", "true"),
+    ];
+    let mut node_a = spawn_daemon(NS_A, VETH_A, &env);
+    let mut node_b = spawn_daemon(NS_B, VETH_B, &env);
+
+    let result = (|| -> Result<()> {
+        wait_for_api(NS_A, 40)?;
+        wait_for_api(NS_B, 40)?;
+
+        println!("Waiting for peer discovery and session establishment...");
+        thread::sleep(Duration::from_secs(8));
+
+        assert!(
+            !api_get(NS_A, "/status")?["sessions"]
+                .as_array()
+                .unwrap()
+                .is_empty(),
+            "no session before challenging compute test"
+        );
+
+        let pubkey_b = get_peer_pubkey(NS_A)?;
+        let pubkey_a = get_peer_pubkey(NS_B)?;
+
+        // Task 1: a five-stage data pipeline.
+        // Stages: generate synthetic data → filter on a predicate → aggregate
+        // by category → sort descending → take top-N. This represents a
+        // realistic distributed analytics workload.
+        let pipeline_body = serde_json::json!({
+            "to": pubkey_b,
+            "payload": {
+                "op": "pipeline",
+                "steps": [
+                    {
+                        "type": "generate",
+                        "seed": 42,
+                        "count": 10000,
+                        "distribution": "uniform",
+                        "range": [0.0, 1.0]
+                    },
+                    {
+                        "type": "filter",
+                        "predicate": {
+                            "field": "value",
+                            "op": "gt",
+                            "threshold": 0.5
+                        }
+                    },
+                    {
+                        "type": "aggregate",
+                        "function": "sum",
+                        "group_by": ["category"],
+                        "output_fields": ["category", "count", "total"]
+                    },
+                    {
+                        "type": "sort",
+                        "by": "count",
+                        "order": "desc"
+                    },
+                    {
+                        "type": "limit",
+                        "n": 100
+                    }
+                ],
+                "output_format": "jsonl",
+                "timeout_ms": 30000,
+                "priority": "high",
+                "resources": {
+                    "max_memory_bytes": 268435456,
+                    "max_cpu_cores": 4,
+                    "max_wall_time_ms": 30000
+                }
+            }
+        })
+        .to_string();
+
+        let pipeline_resp = api_post(NS_A, "/compute/submit", &pipeline_body)?;
+        let pipeline_id = pipeline_resp["task_id"]
+            .as_str()
+            .context("pipeline submit missing task_id")?
+            .to_string();
+        println!("Pipeline task submitted: {}...", &pipeline_id[..16]);
+
+        // Small delay between submits so timestamps don't collide
+        thread::sleep(Duration::from_millis(10));
+
+        // Task 2: blocked matrix multiply over 64-bit integers, tiled for
+        // cache efficiency. This represents a compute-intensive linear algebra
+        // workload that would require coordination across CPU cores.
+        let matmul_body = serde_json::json!({
+            "to": pubkey_b,
+            "payload": {
+                "op": "matmul",
+                "dtype": "int64",
+                "tile_size": 64,
+                "a": {
+                    "rows": 512,
+                    "cols": 512,
+                    "data_ref": "chunk:a1b2c3d4e5f67890"
+                },
+                "b": {
+                    "rows": 512,
+                    "cols": 512,
+                    "data_ref": "chunk:0987654321fedcba"
+                },
+                "accumulator": "kahan",
+                "parallel": true,
+                "resources": {
+                    "max_memory_bytes": 536870912,
+                    "max_cpu_cores": 8,
+                    "max_wall_time_ms": 60000
+                }
+            }
+        })
+        .to_string();
+
+        let matmul_resp = api_post(NS_A, "/compute/submit", &matmul_body)?;
+        let matmul_id = matmul_resp["task_id"]
+            .as_str()
+            .context("matmul submit missing task_id")?
+            .to_string();
+        println!("Matrix multiply task submitted: {}...", &matmul_id[..16]);
+
+        // Both task_ids must be distinct (payloads differ, so hashes differ)
+        assert_ne!(
+            pipeline_id, matmul_id,
+            "distinct payloads must produce distinct task_ids"
+        );
+
+        // A's local store should already hold both tasks
+        let tasks_on_a = api_get(NS_A, &format!("/compute/tasks/{}", pubkey_b))?;
+        let a_tasks = tasks_on_a["tasks"].as_array().context("no tasks on A")?;
+        assert!(
+            a_tasks.len() >= 2,
+            "expected 2 tasks in A's local store, got {}",
+            a_tasks.len()
+        );
+        let a_ids: Vec<&str> = a_tasks
+            .iter()
+            .filter_map(|t| t["task_id"].as_str())
+            .collect();
+        assert!(
+            a_ids.contains(&pipeline_id.as_str()),
+            "pipeline task_id missing from A's store: {:?}",
+            a_ids
+        );
+        assert!(
+            a_ids.contains(&matmul_id.as_str()),
+            "matmul task_id missing from A's store: {:?}",
+            a_ids
+        );
+        println!("Both tasks confirmed in A's local store");
+
+        println!("Waiting for chunk delivery to B...");
+        thread::sleep(Duration::from_secs(4));
+
+        // B should have received and stored both tasks from A
+        let tasks_on_b = api_get(NS_B, &format!("/compute/tasks/{}", pubkey_a))?;
+        let b_tasks = tasks_on_b["tasks"]
+            .as_array()
+            .context("no tasks array on B")?;
+        assert!(
+            b_tasks.len() >= 2,
+            "expected 2 tasks on B from A, got {}",
+            b_tasks.len()
+        );
+
+        let b_ids: Vec<&str> = b_tasks
+            .iter()
+            .filter_map(|t| t["task_id"].as_str())
+            .collect();
+
+        // task_id is blake3(sender || timestamp || payload_bytes).
+        // A match on B proves the payload survived the round-trip byte-for-byte.
+        assert!(
+            b_ids.contains(&pipeline_id.as_str()),
+            "pipeline task_id not received on B — payload corrupted in transit: {:?}",
+            b_ids
+        );
+        assert!(
+            b_ids.contains(&matmul_id.as_str()),
+            "matmul task_id not received on B — payload corrupted in transit: {:?}",
+            b_ids
+        );
+
+        for task in b_tasks {
+            assert_eq!(
+                task["status"].as_str().unwrap_or(""),
+                "Queued",
+                "unexpected status for {} on B",
+                task["task_id"]
+            );
+        }
+        println!(
+            "Both tasks arrived on B: pipeline={}... matmul={}...",
+            &pipeline_id[..16],
+            &matmul_id[..16]
+        );
+
+        // Verify B's /api/services reflects compute as enabled
+        let services = api_get(NS_B, "/services")?;
+        let svc_list = services["services"].as_array().context("no services list")?;
+        let compute_entry = svc_list
+            .iter()
+            .find(|s| s["name"].as_str() == Some("compute"))
+            .context("compute not in services list")?;
+        assert!(
+            compute_entry["enabled"].as_bool().unwrap_or(false),
+            "compute service not enabled on B"
+        );
+        assert_eq!(
+            compute_entry["contract"].as_str().unwrap_or(""),
+            "Bulk",
+            "compute contract should be Bulk"
+        );
+        println!("Compute service confirmed enabled with Bulk contract on B");
+
+        // summit-ctl compute tasks: B should list both tasks from A
+        let ctl_tasks = netns_exec(
+            NS_B,
+            &[
+                summit_ctl_path().to_str().unwrap(),
+                "compute",
+                "tasks",
+                &pubkey_a,
+            ],
+        )?;
+        assert!(
+            ctl_tasks.contains(&pipeline_id[..16]),
+            "ctl missing pipeline task: {}",
+            ctl_tasks
+        );
+        assert!(
+            ctl_tasks.contains(&matmul_id[..16]),
+            "ctl missing matmul task: {}",
+            ctl_tasks
+        );
+        println!("summit-ctl compute tasks (B):\n{}", ctl_tasks);
+
+        println!("Verified challenging compute tasks end-to-end");
+        Ok(())
+    })();
+
+    node_a.kill().ok();
+    node_b.kill().ok();
+    cleanup_summitd();
+
+    result.unwrap();
+}
+
 /// Verify the /api/schema endpoint returns known schemas and `summit-ctl schema list` works.
 #[test]
 fn test_schema_list() {

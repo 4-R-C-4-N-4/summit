@@ -1,5 +1,8 @@
 pub mod cache;
 pub mod chunk_types;
+pub mod compute_service;
+pub mod compute_store;
+pub mod compute_types;
 pub mod file_transfer;
 pub mod message_store;
 pub mod messaging_service;
@@ -13,6 +16,9 @@ pub mod trust;
 
 pub use cache::ChunkCache;
 pub use chunk_types::{IncomingChunk, OutgoingChunk};
+pub use compute_service::ComputeService;
+pub use compute_store::{ComputeStore, ComputeTask};
+pub use compute_types::{ComputeEnvelope, TaskAck, TaskResult, TaskStatus, TaskSubmit};
 pub use file_transfer::{chunk_file, FileMetadata, FileReassembler, MAX_CHUNK_SIZE};
 pub use message_store::MessageStore;
 pub use messaging_service::{messaging_schema_id, msg_types, MessageEnvelope, MessagingService};

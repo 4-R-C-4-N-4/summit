@@ -6,8 +6,9 @@ use axum::{extract::State, Json};
 use serde::{Deserialize, Serialize};
 
 use summit_services::{
-    messaging_schema_id, ChunkCache, KnownSchema, MessageEnvelope, MessageStore, OutgoingChunk,
-    PeerRegistry, SendTarget, SessionTable, TrustRegistry, UntrustedBuffer,
+    messaging_schema_id, ChunkCache, ComputeEnvelope, ComputeStore, KnownSchema, MessageEnvelope,
+    MessageStore, OutgoingChunk, PeerRegistry, SendTarget, SessionTable, TaskSubmit,
+    TrustRegistry, UntrustedBuffer,
 };
 
 use std::sync::Arc;
@@ -23,9 +24,12 @@ pub struct ApiState {
     pub trust: TrustRegistry,
     pub untrusted_buffer: UntrustedBuffer,
     pub message_store: MessageStore,
+    pub compute_store: ComputeStore,
     pub keypair: Arc<Keypair>,
     /// Directory where received files are written.
     pub file_transfer_path: std::path::PathBuf,
+    /// Names of services enabled in the current config, e.g. "messaging", "compute".
+    pub enabled_services: Vec<String>,
 }
 
 // ── /status ──────────────────────────────────────────────────────────────────
@@ -683,7 +687,197 @@ pub async fn handle_schema_list() -> Json<SchemaListResponse> {
             name: KnownSchema::FileMetadata.name().to_string(),
             type_tag: 3,
         },
+        SchemaInfoItem {
+            id: hex::encode(KnownSchema::Message.id()),
+            name: KnownSchema::Message.name().to_string(),
+            type_tag: 4,
+        },
+        SchemaInfoItem {
+            id: hex::encode(KnownSchema::ComputeTask.id()),
+            name: KnownSchema::ComputeTask.name().to_string(),
+            type_tag: 5,
+        },
     ];
 
     Json(SchemaListResponse { schemas })
+}
+
+// ── /services ─────────────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct ServicesResponse {
+    pub services: Vec<ServiceStatus>,
+}
+
+#[derive(Serialize)]
+pub struct ServiceStatus {
+    pub name: String,
+    pub enabled: bool,
+    pub contract: String,
+}
+
+pub async fn handle_services(State(state): State<ApiState>) -> Json<ServicesResponse> {
+    let all = [
+        ("file_transfer", "Bulk"),
+        ("messaging", "Bulk"),
+        ("stream_udp", "Realtime"),
+        ("compute", "Bulk"),
+    ];
+
+    let services = all
+        .iter()
+        .map(|(name, contract)| ServiceStatus {
+            name: name.to_string(),
+            enabled: state.enabled_services.iter().any(|s| s == name),
+            contract: contract.to_string(),
+        })
+        .collect();
+
+    Json(ServicesResponse { services })
+}
+
+// ── /compute/tasks/{peer_pubkey} (GET) ────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct ComputeTasksResponse {
+    pub peer_pubkey: String,
+    pub tasks: Vec<ComputeTaskJson>,
+}
+
+#[derive(Serialize)]
+pub struct ComputeTaskJson {
+    pub task_id: String,
+    pub status: String,
+    pub submitted_at: u64,
+    pub updated_at: u64,
+}
+
+pub async fn handle_compute_tasks(
+    State(state): State<ApiState>,
+    Path(peer_pubkey): Path<String>,
+) -> Result<Json<ComputeTasksResponse>, (StatusCode, String)> {
+    let pubkey_bytes = hex::decode(&peer_pubkey)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid hex".to_string()))?;
+
+    if pubkey_bytes.len() != 32 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "public key must be 32 bytes".to_string(),
+        ));
+    }
+
+    let mut pubkey = [0u8; 32];
+    pubkey.copy_from_slice(&pubkey_bytes);
+
+    let task_ids = state.compute_store.tasks_for_peer(&pubkey);
+    let tasks = task_ids
+        .iter()
+        .filter_map(|id| state.compute_store.get_task(id))
+        .map(|t| ComputeTaskJson {
+            task_id: t.submit.task_id.clone(),
+            status: format!("{:?}", t.status),
+            submitted_at: t.submitted_at,
+            updated_at: t.updated_at,
+        })
+        .collect();
+
+    Ok(Json(ComputeTasksResponse {
+        peer_pubkey,
+        tasks,
+    }))
+}
+
+// ── /compute/submit (POST) ────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct ComputeSubmitRequest {
+    /// Recipient peer public key, hex-encoded.
+    pub to: String,
+    /// Opaque task definition forwarded to the execution engine.
+    pub payload: serde_json::Value,
+}
+
+#[derive(Serialize)]
+pub struct ComputeSubmitResponse {
+    pub task_id: String,
+    pub timestamp: u64,
+}
+
+pub async fn handle_compute_submit(
+    State(state): State<ApiState>,
+    Json(req): Json<ComputeSubmitRequest>,
+) -> Result<Json<ComputeSubmitResponse>, (StatusCode, String)> {
+    let to_bytes = hex::decode(&req.to)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid recipient pubkey".to_string()))?;
+
+    if to_bytes.len() != 32 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "public key must be 32 bytes".to_string(),
+        ));
+    }
+
+    let mut to = [0u8; 32];
+    to.copy_from_slice(&to_bytes);
+
+    let from = state.keypair.public;
+
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+
+    let payload_bytes = serde_json::to_vec(&req.payload)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // task_id = hex(blake3(sender_bytes || timestamp_le || payload_bytes))
+    let task_id = {
+        let mut h = blake3::Hasher::new();
+        h.update(&from);
+        h.update(&timestamp.to_le_bytes());
+        h.update(&payload_bytes);
+        hex::encode(h.finalize().as_bytes())
+    };
+
+    let submit = TaskSubmit {
+        task_id: task_id.clone(),
+        sender: hex::encode(from),
+        timestamp,
+        payload: req.payload,
+    };
+
+    let envelope = ComputeEnvelope {
+        msg_type: summit_services::compute_types::msg_types::TASK_SUBMIT.to_string(),
+        payload: serde_json::to_value(&submit)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?,
+    };
+
+    let raw = serde_json::to_vec(&envelope)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let chunk = OutgoingChunk {
+        type_tag: 0,
+        schema_id: summit_core::wire::compute_hash(),
+        payload: bytes::Bytes::from(raw),
+        priority_flags: 0x02,
+    };
+
+    let target = SendTarget::Peer { public_key: to };
+    state.chunk_tx.send((target, chunk)).map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "send queue closed".to_string(),
+        )
+    })?;
+
+    // Track locally so the sender can query their own submitted tasks
+    state.compute_store.submit(to, submit);
+
+    tracing::info!(
+        task_id = &task_id[..16],
+        to = &req.to[..16.min(req.to.len())],
+        "compute task submitted"
+    );
+
+    Ok(Json(ComputeSubmitResponse { task_id, timestamp }))
 }

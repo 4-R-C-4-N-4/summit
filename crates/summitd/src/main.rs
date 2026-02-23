@@ -78,6 +78,9 @@ async fn main() -> Result<()> {
 
     let message_store = MessageStore::new();
 
+    use summit_services::ComputeStore;
+    let compute_store = ComputeStore::new();
+
     // Handshake state tracking (shared between initiator and listener)
     let handshake_tracker = session::HandshakeTracker::shared();
 
@@ -660,7 +663,7 @@ async fn main() -> Result<()> {
     // Service dispatcher — routes chunks to the appropriate service
     let dispatcher = {
         use dispatch::ServiceDispatcher;
-        use summit_services::{ChunkService, KnownSchema, MessagingService};
+        use summit_services::{ChunkService, ComputeService, KnownSchema, MessagingService};
         let mut d = ServiceDispatcher::new();
         let reassembler_svc = reassembler.clone() as Arc<dyn ChunkService>;
         // Register the primary service hash (used for activate/deactivate)
@@ -672,6 +675,13 @@ async fn main() -> Result<()> {
         d.register_schema(KnownSchema::FileMetadata.id(), reassembler_svc);
         let messaging = Arc::new(MessagingService::new(message_store.clone()));
         d.register(messaging as Arc<dyn ChunkService>);
+        if config.services.compute {
+            let compute_svc = Arc::new(ComputeService::new(
+                compute_store.clone(),
+                config.services.compute_settings.clone(),
+            ));
+            d.register(compute_svc as Arc<dyn ChunkService>);
+        }
         Arc::new(d)
     };
 
@@ -925,6 +935,20 @@ async fn main() -> Result<()> {
     // Status HTTP endpoint
     let status_port = 9001u16;
     let _status_server = {
+        let mut enabled_services: Vec<String> = Vec::new();
+        if config.services.file_transfer {
+            enabled_services.push("file_transfer".to_string());
+        }
+        if config.services.messaging {
+            enabled_services.push("messaging".to_string());
+        }
+        if config.services.stream_udp {
+            enabled_services.push("stream_udp".to_string());
+        }
+        if config.services.compute {
+            enabled_services.push("compute".to_string());
+        }
+
         let state = summit_api::ApiState {
             sessions: sessions.clone(),
             cache: cache.clone(),
@@ -934,8 +958,10 @@ async fn main() -> Result<()> {
             trust: trust_registry.clone(),
             untrusted_buffer: untrusted_buffer.clone(),
             message_store: message_store.clone(),
+            compute_store: compute_store.clone(),
             keypair: keypair.clone(),
             file_transfer_path: file_transfer_path.clone(),
+            enabled_services,
         };
         tokio::spawn(async move {
             if let Err(e) = summit_api::serve(state, status_port).await {

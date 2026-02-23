@@ -32,6 +32,12 @@ pub async fn serve(state: ApiState, port: u16) -> anyhow::Result<()> {
             get(handlers::handle_get_messages),
         )
         .route("/messages/send", post(handlers::handle_send_message))
+        .route("/services", get(handlers::handle_services))
+        .route(
+            "/compute/tasks/{peer_pubkey}",
+            get(handlers::handle_compute_tasks),
+        )
+        .route("/compute/submit", post(handlers::handle_compute_submit))
         .with_state(state);
 
     let app = Router::new().nest("/api", api_routes).layer(cors);

@@ -113,6 +113,45 @@ struct FilesResponse {
     in_progress: Vec<String>,
 }
 
+#[derive(Deserialize)]
+struct ServicesResponse {
+    services: Vec<ServiceStatus>,
+}
+
+#[derive(Deserialize)]
+struct ServiceStatus {
+    name: String,
+    enabled: bool,
+    contract: String,
+}
+
+#[derive(Deserialize)]
+struct ComputeTasksResponse {
+    peer_pubkey: String,
+    tasks: Vec<ComputeTaskJson>,
+}
+
+#[derive(Deserialize)]
+#[allow(dead_code)]
+struct ComputeTaskJson {
+    task_id: String,
+    status: String,
+    submitted_at: u64,
+    updated_at: u64,
+}
+
+#[derive(Serialize)]
+struct ComputeSubmitRequest {
+    to: String,
+    payload: serde_json::Value,
+}
+
+#[derive(Deserialize)]
+struct ComputeSubmitResponse {
+    task_id: String,
+    timestamp: u64,
+}
+
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
 
 fn base_url(port: u16) -> String {
@@ -614,44 +653,132 @@ async fn cmd_messages_send(port: u16, to: &str, text: &str) -> Result<()> {
     Ok(())
 }
 
+async fn cmd_services(port: u16) -> Result<()> {
+    let resp: ServicesResponse = get_json(&format!("{}/services", base_url(port))).await?;
+
+    println!("═══════════════════════════════════════");
+    println!("  Services");
+    println!("═══════════════════════════════════════");
+
+    for svc in &resp.services {
+        let icon = if svc.enabled { "✓" } else { "○" };
+        let state = if svc.enabled { "enabled" } else { "disabled" };
+        println!(
+            "  {} {:<16} {} ({})",
+            icon, svc.name, state, svc.contract
+        );
+    }
+
+    Ok(())
+}
+
+async fn cmd_compute_tasks(port: u16, peer_pubkey: &str) -> Result<()> {
+    let resp: ComputeTasksResponse =
+        get_json(&format!("{}/compute/tasks/{}", base_url(port), peer_pubkey)).await?;
+
+    if resp.tasks.is_empty() {
+        println!(
+            "No compute tasks from {}...",
+            &resp.peer_pubkey[..16.min(resp.peer_pubkey.len())]
+        );
+        return Ok(());
+    }
+
+    println!("═══════════════════════════════════════");
+    println!(
+        "  Compute Tasks from {}...",
+        &resp.peer_pubkey[..16.min(resp.peer_pubkey.len())]
+    );
+    println!("═══════════════════════════════════════");
+
+    for t in &resp.tasks {
+        println!(
+            "  ┌─ {}...",
+            &t.task_id[..16.min(t.task_id.len())]
+        );
+        println!("  │  status       : {}", t.status);
+        println!("  │  submitted_at : {}", t.submitted_at);
+        println!("  └─ updated_at   : {}", t.updated_at);
+    }
+
+    Ok(())
+}
+
+async fn cmd_compute_submit(port: u16, to: &str, payload_str: &str) -> Result<()> {
+    let payload: serde_json::Value = serde_json::from_str(payload_str)
+        .context("payload must be valid JSON")?;
+
+    let req = ComputeSubmitRequest {
+        to: to.to_string(),
+        payload,
+    };
+
+    let resp: ComputeSubmitResponse =
+        post_json_body(&format!("{}/compute/submit", base_url(port)), &req).await?;
+
+    println!("Compute task submitted:");
+    println!(
+        "  Task ID   : {}...",
+        &resp.task_id[..16.min(resp.task_id.len())]
+    );
+    println!("  Timestamp : {}", resp.timestamp);
+
+    Ok(())
+}
+
 fn print_usage() {
     println!("Usage: summit-ctl [--port <port>] <command>");
     println!();
-    println!("Commands:");
-    println!("  shutdown            Gracefully shutdown the daemon");
-    println!("  status              Show daemon status, sessions, and cache");
-    println!("  peers               List discovered peers with trust status");
-    println!("  cache               Show cache statistics");
-    println!("  cache clear         Clear the chunk cache");
-    println!("  send <file> [options]");
-    println!("                      Send a file (broadcast to all trusted peers by default)");
-    println!("    --peer <pubkey>   Send to specific peer");
-    println!("    --session <id>    Send to specific session");
-    println!("  files               List received files");
-    println!("  trust list          Show trust rules");
-    println!("  trust add <pubkey>  Trust a peer (process buffered chunks)");
-    println!("  trust block <pubkey> Block a peer");
-    println!("  trust pending       List untrusted peers with buffered chunks");
+    println!("Daemon");
+    println!("  shutdown                        Gracefully shut down the daemon");
+    println!("  status                          Sessions, cache, and peer summary");
+    println!("  services                        Show enabled/disabled services");
+    println!();
+    println!("Peers & Sessions");
+    println!("  peers                           List discovered peers with trust status");
+    println!("  sessions drop <id>              Drop a specific session");
+    println!("  sessions inspect <id>           Show detailed session info");
+    println!();
+    println!("Trust");
+    println!("  trust list                      Show trust rules");
+    println!("  trust add <pubkey>              Trust a peer (flushes buffered chunks)");
+    println!("  trust block <pubkey>            Block a peer");
+    println!("  trust pending                   Untrusted peers with buffered chunks");
+    println!();
+    println!("File Transfer");
+    println!("  send <file>                     Broadcast file to all trusted peers");
+    println!("  send <file> --peer <pubkey>     Send file to specific peer");
+    println!("  send <file> --session <id>      Send file to specific session");
+    println!("  files                           List received and in-progress files");
+    println!();
+    println!("Messaging");
+    println!("  messages <pubkey>               List messages from a peer");
+    println!("  messages send <pubkey> <text>   Send a text message to a peer");
+    println!();
+    println!("Compute");
+    println!("  compute tasks <pubkey>          List compute tasks from a peer");
+    println!("  compute submit <pubkey> <json>  Submit a compute task to a peer");
+    println!();
+    println!("Cache & Schema");
+    println!("  cache                           Show cache statistics");
+    println!("  cache clear                     Clear the chunk cache");
+    println!("  schema list                     List all known schemas");
     println!();
     println!("Options:");
     println!(
-        "  --port <port>       Status endpoint port (default: {})",
+        "  --port <port>                   API port (default: {})",
         DEFAULT_PORT
     );
     println!();
     println!("Examples:");
     println!("  summit-ctl status");
-    println!("  summit-ctl peers");
+    println!("  summit-ctl services");
     println!("  summit-ctl trust add 5c8c7d3c9eff6572...");
     println!("  summit-ctl send document.pdf");
     println!("  summit-ctl send photo.jpg --peer 99b1db0b1849c7f8...");
-    println!("  summit-ctl send report.pdf --session 5441b43445712d95...");
-    println!("  sessions drop <id>  Drop a specific session");
-    println!("  sessions inspect <id> Show detailed session info");
-    println!("  schema list         List all known schemas");
-    println!("  messages <pubkey>   List messages from a peer");
-    println!("  messages send <pubkey> <text>");
-    println!("                      Send a text message to a peer");
+    println!("  summit-ctl messages send 99b1db0b... 'hello world'");
+    println!("  summit-ctl compute submit 99b1db0b... '{{\"cmd\":\"echo\",\"args\":[\"hi\"]}}'");
+    println!("  summit-ctl compute tasks 99b1db0b...");
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -710,11 +837,11 @@ async fn main() -> Result<()> {
 
     match remaining_refs.as_slice() {
         ["shutdown"] => cmd_shutdown(port).await,
+        ["status"] | [] => cmd_status(port).await,
+        ["services"] => cmd_services(port).await,
+        ["peers"] => cmd_peers(port).await,
         ["sessions", "drop", id] => cmd_session_drop(port, id).await,
         ["sessions", "inspect", id] => cmd_session_inspect(port, id).await,
-        ["schema", "list"] | ["schema"] => cmd_schema_list(port).await,
-        ["status"] | [] => cmd_status(port).await,
-        ["peers"] => cmd_peers(port).await,
         ["cache"] => cmd_cache(port).await,
         ["cache", "clear"] => cmd_cache_clear(port).await,
         ["files"] => cmd_files(port).await,
@@ -724,6 +851,9 @@ async fn main() -> Result<()> {
         ["trust", "pending"] => cmd_trust_pending(port).await,
         ["messages", peer] => cmd_messages(port, peer).await,
         ["messages", "send", to, text] => cmd_messages_send(port, to, text).await,
+        ["compute", "tasks", peer] => cmd_compute_tasks(port, peer).await,
+        ["compute", "submit", to, payload] => cmd_compute_submit(port, to, payload).await,
+        ["schema", "list"] | ["schema"] => cmd_schema_list(port).await,
         ["help"] | ["--help"] | ["-h"] => {
             print_usage();
             Ok(())

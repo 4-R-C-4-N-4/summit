@@ -13,6 +13,7 @@ pub enum KnownSchema {
     FileChunk,
     FileData,
     FileMetadata,
+    ComputeTask,
 }
 
 impl KnownSchema {
@@ -22,6 +23,7 @@ impl KnownSchema {
         let file_data_id = summit_core::crypto::hash(b"summit.file.data");
         let file_metadata_id = summit_core::crypto::hash(b"summit.file.metadata");
         let message_id = summit_core::crypto::hash(b"summit.message");
+        let compute_id = summit_core::wire::compute_hash();
 
         if schema_id == &test_ping_id {
             Some(Self::TestPing)
@@ -33,6 +35,8 @@ impl KnownSchema {
             Some(Self::FileMetadata)
         } else if schema_id == &message_id {
             Some(Self::Message)
+        } else if schema_id == &compute_id {
+            Some(Self::ComputeTask)
         } else {
             None
         }
@@ -59,6 +63,11 @@ impl KnownSchema {
                 Ok(())
             }
             Self::Message => Ok(()),
+            Self::ComputeTask => {
+                serde_json::from_slice::<crate::compute_types::ComputeEnvelope>(payload)
+                    .context("invalid compute envelope JSON")?;
+                Ok(())
+            }
         }
     }
 
@@ -70,6 +79,7 @@ impl KnownSchema {
             Self::FileData => summit_core::crypto::hash(b"summit.file.data"),
             Self::FileMetadata => summit_core::crypto::hash(b"summit.file.metadata"),
             Self::Message => summit_core::crypto::hash(b"summit.message"),
+            Self::ComputeTask => summit_core::wire::compute_hash(),
         }
     }
 
@@ -81,6 +91,7 @@ impl KnownSchema {
             Self::FileData => "summit.file.data",
             Self::FileMetadata => "summit.file.metadata",
             Self::Message => "summit.message",
+            Self::ComputeTask => "summit.compute",
         }
     }
 
@@ -91,6 +102,7 @@ impl KnownSchema {
             Self::FileMetadata => Some(Box::new(validate_file_metadata)),
             Self::FileChunk | Self::FileData => None,
             Self::Message => None,
+            Self::ComputeTask => None,
         }
     }
 }
