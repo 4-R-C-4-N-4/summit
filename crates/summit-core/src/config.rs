@@ -147,7 +147,7 @@ impl Default for ServicesConfig {
 impl Default for FileTransferSettings {
     fn default() -> Self {
         Self {
-            storage_path: data_dir().join("files"),
+            storage_path: PathBuf::from("/tmp/summit-received"),
             cache_max_bytes: 1_073_741_824, // 1 GB
         }
     }
@@ -263,6 +263,9 @@ impl SummitConfig {
         }
         if let Ok(v) = std::env::var("SUMMIT_SERVICES__FILE_TRANSFER") {
             self.services.file_transfer = v == "true" || v == "1";
+        }
+        if let Ok(v) = std::env::var("SUMMIT_FILE_TRANSFER__STORAGE_PATH") {
+            self.services.file_transfer_settings.storage_path = PathBuf::from(v);
         }
         if let Ok(v) = std::env::var("SUMMIT_SERVICES__MESSAGING") {
             self.services.messaging = v == "true" || v == "1";

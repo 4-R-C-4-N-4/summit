@@ -24,6 +24,8 @@ pub struct ApiState {
     pub untrusted_buffer: UntrustedBuffer,
     pub message_store: MessageStore,
     pub keypair: Arc<Keypair>,
+    /// Directory where received files are written.
+    pub file_transfer_path: std::path::PathBuf,
 }
 
 // ── /status ──────────────────────────────────────────────────────────────────
@@ -254,10 +256,10 @@ pub struct FilesResponse {
 }
 
 pub async fn handle_files(State(state): State<ApiState>) -> Json<FilesResponse> {
-    let received_dir = std::path::PathBuf::from("/tmp/summit-received");
+    let received_dir = &state.file_transfer_path;
     let mut received = Vec::new();
 
-    if let Ok(entries) = std::fs::read_dir(&received_dir) {
+    if let Ok(entries) = std::fs::read_dir(received_dir) {
         for entry in entries.flatten() {
             if let Some(name) = entry.file_name().to_str() {
                 received.push(name.to_string());

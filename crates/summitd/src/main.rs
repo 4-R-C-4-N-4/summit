@@ -645,9 +645,9 @@ async fn main() -> Result<()> {
     let delivery_tracker = delivery::DeliveryTracker::new();
 
     // File reassembler - watches incoming chunks, detects file metadata, reassembles
-    let reassembler = Arc::new(FileReassembler::new(std::path::PathBuf::from(
-        "/tmp/summit-received",
-    )));
+    let file_transfer_path = config.services.file_transfer_settings.storage_path.clone();
+    tracing::info!(path = %file_transfer_path.display(), "file transfer storage path");
+    let reassembler = Arc::new(FileReassembler::new(file_transfer_path.clone()));
 
     // Trust registry and untrusted chunk buffer
     let trust_registry = TrustRegistry::new();
@@ -660,9 +660,16 @@ async fn main() -> Result<()> {
     // Service dispatcher — routes chunks to the appropriate service
     let dispatcher = {
         use dispatch::ServiceDispatcher;
-        use summit_services::{ChunkService, MessagingService};
+        use summit_services::{ChunkService, KnownSchema, MessagingService};
         let mut d = ServiceDispatcher::new();
-        d.register(reassembler.clone() as Arc<dyn ChunkService>);
+        let reassembler_svc = reassembler.clone() as Arc<dyn ChunkService>;
+        // Register the primary service hash (used for activate/deactivate)
+        d.register(reassembler_svc.clone());
+        // Also register the actual schema IDs used on the wire so incoming
+        // file chunks are routed directly to the reassembler instead of
+        // falling through to the legacy chunk_tx channel.
+        d.register_schema(KnownSchema::FileData.id(), reassembler_svc.clone());
+        d.register_schema(KnownSchema::FileMetadata.id(), reassembler_svc);
         let messaging = Arc::new(MessagingService::new(message_store.clone()));
         d.register(messaging as Arc<dyn ChunkService>);
         Arc::new(d)
@@ -928,6 +935,7 @@ async fn main() -> Result<()> {
             untrusted_buffer: untrusted_buffer.clone(),
             message_store: message_store.clone(),
             keypair: keypair.clone(),
+            file_transfer_path: file_transfer_path.clone(),
         };
         tokio::spawn(async move {
             if let Err(e) = summit_api::serve(state, status_port).await {

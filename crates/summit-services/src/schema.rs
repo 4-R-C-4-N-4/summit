@@ -19,12 +19,18 @@ impl KnownSchema {
     pub fn from_id(schema_id: &[u8; 32]) -> Option<Self> {
         let test_ping_id = summit_core::crypto::hash(b"summit.test.ping");
         let file_chunk_id = summit_core::crypto::hash(b"summit.file.chunk");
+        let file_data_id = summit_core::crypto::hash(b"summit.file.data");
+        let file_metadata_id = summit_core::crypto::hash(b"summit.file.metadata");
         let message_id = summit_core::crypto::hash(b"summit.message");
 
         if schema_id == &test_ping_id {
             Some(Self::TestPing)
         } else if schema_id == &file_chunk_id {
             Some(Self::FileChunk)
+        } else if schema_id == &file_data_id {
+            Some(Self::FileData)
+        } else if schema_id == &file_metadata_id {
+            Some(Self::FileMetadata)
         } else if schema_id == &message_id {
             Some(Self::Message)
         } else {

@@ -180,7 +180,7 @@ async fn cmd_status(port: u16) -> Result<()> {
             };
             println!("  ┌─ {} {}", trust_icon, &s.session_id[..16]);
             println!("  │  peer     : {}", s.peer);
-            println!("  │  pubkey   : {}...", &s.peer_pubkey);
+            println!("  │  pubkey   : {}", &s.peer_pubkey);
             println!("  │  contract : {}", s.contract);
             println!("  │  trust    : {}", s.trust_level);
             println!("  └─ uptime   : {}s", s.established_secs);
@@ -211,7 +211,7 @@ async fn cmd_peers(port: u16) -> Result<()> {
 
         let complete_marker = if p.is_complete { "" } else { " (incomplete)" };
 
-        println!("  ┌─ {} {}...", trust_icon, &p.public_key);
+        println!("  ┌─ {} {}", trust_icon, &p.public_key);
         println!("  │  addr         : {}", p.addr);
         println!("  │  session port : {}", p.session_port);
         println!(
@@ -375,7 +375,7 @@ async fn cmd_trust_list(port: u16) -> Result<()> {
             "Blocked" => "✗",
             _ => "?",
         };
-        println!("  {} {} — {}", icon, &rule.public_key[..16], rule.level);
+        println!("  {} {} — {}", icon, &rule.public_key, rule.level);
     }
 
     Ok(())
@@ -389,7 +389,7 @@ async fn cmd_trust_add(port: u16, pubkey: &str) -> Result<()> {
     let resp: TrustAddResponse =
         post_json_body(&format!("{}/trust/add", base_url(port)), &req).await?;
 
-    println!("✓ Peer trusted: {}...", &resp.public_key[..16]);
+    println!("✓ Peer trusted: {}", &resp.public_key[..16]);
     if resp.flushed_chunks > 0 {
         println!("  Processed {} buffered chunks", resp.flushed_chunks);
     }
@@ -405,7 +405,7 @@ async fn cmd_trust_block(port: u16, pubkey: &str) -> Result<()> {
     let resp: TrustBlockResponse =
         post_json_body(&format!("{}/trust/block", base_url(port)), &req).await?;
 
-    println!("✗ Peer blocked: {}...", &resp.public_key[..16]);
+    println!("✗ Peer blocked: {}", &resp.public_key[..16]);
 
     Ok(())
 }
@@ -424,7 +424,7 @@ async fn cmd_trust_pending(port: u16) -> Result<()> {
 
     for peer in &resp.peers {
         println!(
-            "  ? {}... — {} chunks buffered",
+            "  ? {} — {} chunks buffered",
             &peer.public_key[..16],
             peer.buffered_chunks
         );
