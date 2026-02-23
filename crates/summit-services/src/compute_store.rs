@@ -100,7 +100,10 @@ impl ComputeStore {
 
     /// Return all tasks regardless of peer.
     pub fn all_tasks(&self) -> Vec<ComputeTask> {
-        self.tasks.iter().map(|entry| entry.value().clone()).collect()
+        self.tasks
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect()
     }
 }
 
