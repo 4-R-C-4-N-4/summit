@@ -1008,8 +1008,13 @@ fn test_compute_task_simple() {
 
         // A stores the task locally at submit time — no delivery wait needed
         let tasks_on_a = api_get(NS_A, &format!("/compute/tasks/{}", pubkey_b))?;
-        let a_tasks = tasks_on_a["tasks"].as_array().context("no tasks array on A")?;
-        assert!(!a_tasks.is_empty(), "task not in A's local store after submit");
+        let a_tasks = tasks_on_a["tasks"]
+            .as_array()
+            .context("no tasks array on A")?;
+        assert!(
+            !a_tasks.is_empty(),
+            "task not in A's local store after submit"
+        );
         assert_eq!(
             a_tasks[0]["task_id"].as_str().unwrap(),
             task_id,
@@ -1084,10 +1089,7 @@ fn test_compute_task_simple() {
         println!("summit-ctl compute submit:\n{}", ctl_submit);
 
         // summit-ctl services: compute should show as enabled on both nodes
-        let ctl_services_a = netns_exec(
-            NS_A,
-            &[summit_ctl_path().to_str().unwrap(), "services"],
-        )?;
+        let ctl_services_a = netns_exec(NS_A, &[summit_ctl_path().to_str().unwrap(), "services"])?;
         assert!(
             ctl_services_a.contains("compute") && ctl_services_a.contains("enabled"),
             "compute not shown as enabled on A: {}",
@@ -1331,7 +1333,9 @@ fn test_compute_task_challenging() {
 
         // Verify B's /api/services reflects compute as enabled
         let services = api_get(NS_B, "/services")?;
-        let svc_list = services["services"].as_array().context("no services list")?;
+        let svc_list = services["services"]
+            .as_array()
+            .context("no services list")?;
         let compute_entry = svc_list
             .iter()
             .find(|s| s["name"].as_str() == Some("compute"))

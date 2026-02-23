@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 
 use summit_services::{
     messaging_schema_id, ChunkCache, ComputeEnvelope, ComputeStore, KnownSchema, MessageEnvelope,
-    MessageStore, OutgoingChunk, PeerRegistry, SendTarget, SessionTable, TaskSubmit,
-    TrustRegistry, UntrustedBuffer,
+    MessageStore, OutgoingChunk, PeerRegistry, SendTarget, SessionTable, TaskSubmit, TrustRegistry,
+    UntrustedBuffer,
 };
 
 use std::sync::Arc;
@@ -781,10 +781,7 @@ pub async fn handle_compute_tasks(
         })
         .collect();
 
-    Ok(Json(ComputeTasksResponse {
-        peer_pubkey,
-        tasks,
-    }))
+    Ok(Json(ComputeTasksResponse { peer_pubkey, tasks }))
 }
 
 // ── /compute/submit (POST) ────────────────────────────────────────────────────
@@ -807,8 +804,12 @@ pub async fn handle_compute_submit(
     State(state): State<ApiState>,
     Json(req): Json<ComputeSubmitRequest>,
 ) -> Result<Json<ComputeSubmitResponse>, (StatusCode, String)> {
-    let to_bytes = hex::decode(&req.to)
-        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid recipient pubkey".to_string()))?;
+    let to_bytes = hex::decode(&req.to).map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            "invalid recipient pubkey".to_string(),
+        )
+    })?;
 
     if to_bytes.len() != 32 {
         return Err((

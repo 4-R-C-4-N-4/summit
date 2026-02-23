@@ -663,10 +663,7 @@ async fn cmd_services(port: u16) -> Result<()> {
     for svc in &resp.services {
         let icon = if svc.enabled { "✓" } else { "○" };
         let state = if svc.enabled { "enabled" } else { "disabled" };
-        println!(
-            "  {} {:<16} {} ({})",
-            icon, svc.name, state, svc.contract
-        );
+        println!("  {} {:<16} {} ({})", icon, svc.name, state, svc.contract);
     }
 
     Ok(())
@@ -692,10 +689,7 @@ async fn cmd_compute_tasks(port: u16, peer_pubkey: &str) -> Result<()> {
     println!("═══════════════════════════════════════");
 
     for t in &resp.tasks {
-        println!(
-            "  ┌─ {}...",
-            &t.task_id[..16.min(t.task_id.len())]
-        );
+        println!("  ┌─ {}...", &t.task_id[..16.min(t.task_id.len())]);
         println!("  │  status       : {}", t.status);
         println!("  │  submitted_at : {}", t.submitted_at);
         println!("  └─ updated_at   : {}", t.updated_at);
@@ -705,8 +699,8 @@ async fn cmd_compute_tasks(port: u16, peer_pubkey: &str) -> Result<()> {
 }
 
 async fn cmd_compute_submit(port: u16, to: &str, payload_str: &str) -> Result<()> {
-    let payload: serde_json::Value = serde_json::from_str(payload_str)
-        .context("payload must be valid JSON")?;
+    let payload: serde_json::Value =
+        serde_json::from_str(payload_str).context("payload must be valid JSON")?;
 
     let req = ComputeSubmitRequest {
         to: to.to_string(),

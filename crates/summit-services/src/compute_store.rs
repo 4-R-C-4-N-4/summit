@@ -45,13 +45,15 @@ impl ComputeStore {
     /// Store a new task submission. Duplicate `task_id`s are silently ignored.
     pub fn submit(&self, peer_pubkey: [u8; 32], submit: TaskSubmit) {
         let task_id = submit.task_id.clone();
-        self.tasks.entry(task_id.clone()).or_insert_with(|| ComputeTask {
-            submit,
-            status: TaskStatus::Queued,
-            result: None,
-            submitted_at: now_ms(),
-            updated_at: now_ms(),
-        });
+        self.tasks
+            .entry(task_id.clone())
+            .or_insert_with(|| ComputeTask {
+                submit,
+                status: TaskStatus::Queued,
+                result: None,
+                submitted_at: now_ms(),
+                updated_at: now_ms(),
+            });
         self.peer_tasks
             .entry(peer_pubkey)
             .or_default()
@@ -161,7 +163,10 @@ mod tests {
         store.submit(peer, make_submit("task-1"));
         store.update_status("task-1", TaskStatus::Running);
 
-        assert_eq!(store.get_task("task-1").unwrap().status, TaskStatus::Running);
+        assert_eq!(
+            store.get_task("task-1").unwrap().status,
+            TaskStatus::Running
+        );
     }
 
     #[test]

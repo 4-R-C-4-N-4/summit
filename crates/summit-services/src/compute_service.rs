@@ -50,8 +50,8 @@ impl ChunkService for ComputeService {
         _header: &ChunkHeader,
         payload: &[u8],
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let envelope: ComputeEnvelope = serde_json::from_slice(payload)
-            .map_err(|e| format!("invalid compute JSON: {e}"))?;
+        let envelope: ComputeEnvelope =
+            serde_json::from_slice(payload).map_err(|e| format!("invalid compute JSON: {e}"))?;
 
         match envelope.msg_type.as_str() {
             msg_types::TASK_SUBMIT => {
