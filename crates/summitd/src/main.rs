@@ -980,6 +980,18 @@ async fn main() -> Result<()> {
         })
     };
 
+    // Compute executor — picks up queued remote tasks and runs them
+    let _compute_executor = if config.services.compute {
+        let store = compute_store.clone();
+        let settings = config.services.compute_settings.clone();
+        let tx = chunk_tx.clone();
+        Some(tokio::spawn(async move {
+            summit_services::compute_executor::run(store, settings, tx).await;
+        }))
+    } else {
+        None
+    };
+
     tokio::select! {
         r = broadcast_task      => tracing::error!("broadcast task exited: {:?}", r),
         r = listener_task       => tracing::error!("listener task exited: {:?}", r),

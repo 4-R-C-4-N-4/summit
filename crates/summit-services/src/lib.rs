@@ -1,5 +1,6 @@
 pub mod cache;
 pub mod chunk_types;
+pub mod compute_executor;
 pub mod compute_service;
 pub mod compute_store;
 pub mod compute_types;

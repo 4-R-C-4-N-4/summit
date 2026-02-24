@@ -750,11 +750,19 @@ pub async fn handle_compute_all_tasks(
         .compute_store
         .all_tasks()
         .into_iter()
-        .map(|t| ComputeTaskJson {
-            task_id: t.submit.task_id.clone(),
-            status: format!("{:?}", t.status),
-            submitted_at: t.submitted_at,
-            updated_at: t.updated_at,
+        .map(|t| {
+            let (result, elapsed_ms) = match &t.result {
+                Some(r) => (Some(r.result.clone()), Some(r.elapsed_ms)),
+                None => (None, None),
+            };
+            ComputeTaskJson {
+                task_id: t.submit.task_id.clone(),
+                status: format!("{:?}", t.status),
+                submitted_at: t.submitted_at,
+                updated_at: t.updated_at,
+                result,
+                elapsed_ms,
+            }
         })
         .collect();
 
@@ -775,6 +783,10 @@ pub struct ComputeTaskJson {
     pub status: String,
     pub submitted_at: u64,
     pub updated_at: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub elapsed_ms: Option<u64>,
 }
 
 pub async fn handle_compute_tasks(
@@ -798,11 +810,19 @@ pub async fn handle_compute_tasks(
     let tasks = task_ids
         .iter()
         .filter_map(|id| state.compute_store.get_task(id))
-        .map(|t| ComputeTaskJson {
-            task_id: t.submit.task_id.clone(),
-            status: format!("{:?}", t.status),
-            submitted_at: t.submitted_at,
-            updated_at: t.updated_at,
+        .map(|t| {
+            let (result, elapsed_ms) = match &t.result {
+                Some(r) => (Some(r.result.clone()), Some(r.elapsed_ms)),
+                None => (None, None),
+            };
+            ComputeTaskJson {
+                task_id: t.submit.task_id.clone(),
+                status: format!("{:?}", t.status),
+                submitted_at: t.submitted_at,
+                updated_at: t.updated_at,
+                result,
+                elapsed_ms,
+            }
         })
         .collect();
 
@@ -897,7 +917,7 @@ pub async fn handle_compute_submit(
     })?;
 
     // Track locally so the sender can query their own submitted tasks
-    state.compute_store.submit(to, submit);
+    state.compute_store.track_submitted(to, submit);
 
     tracing::info!(
         task_id = &task_id[..16],

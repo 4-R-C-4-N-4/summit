@@ -138,6 +138,8 @@ struct ComputeTaskJson {
     status: String,
     submitted_at: u64,
     updated_at: u64,
+    result: Option<serde_json::Value>,
+    elapsed_ms: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -692,7 +694,14 @@ async fn cmd_compute_tasks(port: u16, peer_pubkey: &str) -> Result<()> {
         println!("  ┌─ {}...", &t.task_id[..16.min(t.task_id.len())]);
         println!("  │  status       : {}", t.status);
         println!("  │  submitted_at : {}", t.submitted_at);
-        println!("  └─ updated_at   : {}", t.updated_at);
+        println!("  │  updated_at   : {}", t.updated_at);
+        if let Some(ms) = t.elapsed_ms {
+            println!("  │  elapsed      : {}ms", ms);
+        }
+        if let Some(ref result) = t.result {
+            print_result(result);
+        }
+        println!("  └─");
     }
 
     Ok(())
@@ -720,10 +729,33 @@ async fn cmd_compute_tasks_all(port: u16) -> Result<()> {
         println!("  ┌─ {}...", &t.task_id[..16.min(t.task_id.len())]);
         println!("  │  status       : {}", t.status);
         println!("  │  submitted_at : {}", t.submitted_at);
-        println!("  └─ updated_at   : {}", t.updated_at);
+        println!("  │  updated_at   : {}", t.updated_at);
+        if let Some(ms) = t.elapsed_ms {
+            println!("  │  elapsed      : {}ms", ms);
+        }
+        if let Some(ref result) = t.result {
+            print_result(result);
+        }
+        println!("  └─");
     }
 
     Ok(())
+}
+
+fn print_result(result: &serde_json::Value) {
+    if let Some(stdout) = result.get("stdout").and_then(|v| v.as_str()) {
+        if !stdout.is_empty() {
+            println!("  │  stdout       : {}", stdout.trim());
+        }
+    }
+    if let Some(stderr) = result.get("stderr").and_then(|v| v.as_str()) {
+        if !stderr.is_empty() {
+            println!("  │  stderr       : {}", stderr.trim());
+        }
+    }
+    if let Some(error) = result.get("error").and_then(|v| v.as_str()) {
+        println!("  │  error        : {}", error.trim());
+    }
 }
 
 async fn cmd_compute_submit(port: u16, to: &str, payload_str: &str) -> Result<()> {

@@ -16,6 +16,11 @@ pub struct ComputeTask {
     pub submitted_at: u64,
     /// Unix ms when the status was last changed.
     pub updated_at: u64,
+    /// `true` = we originated this task (track-only).
+    /// `false` = a peer sent it to us (eligible for execution).
+    pub local: bool,
+    /// Peer pubkey associated with this task (sender on receiver, receiver on sender).
+    pub peer_pubkey: [u8; 32],
 }
 
 /// In-memory store for compute tasks.
@@ -42,7 +47,8 @@ impl ComputeStore {
         }
     }
 
-    /// Store a new task submission. Duplicate `task_id`s are silently ignored.
+    /// Store a task received from a peer (eligible for execution).
+    /// Duplicate `task_id`s are silently ignored.
     pub fn submit(&self, peer_pubkey: [u8; 32], submit: TaskSubmit) {
         let task_id = submit.task_id.clone();
         self.tasks
@@ -53,6 +59,28 @@ impl ComputeStore {
                 result: None,
                 submitted_at: now_ms(),
                 updated_at: now_ms(),
+                local: false,
+                peer_pubkey,
+            });
+        self.peer_tasks
+            .entry(peer_pubkey)
+            .or_default()
+            .push(task_id);
+    }
+
+    /// Track a task we submitted locally (status-tracking only, not executed here).
+    pub fn track_submitted(&self, peer_pubkey: [u8; 32], submit: TaskSubmit) {
+        let task_id = submit.task_id.clone();
+        self.tasks
+            .entry(task_id.clone())
+            .or_insert_with(|| ComputeTask {
+                submit,
+                status: TaskStatus::Queued,
+                result: None,
+                submitted_at: now_ms(),
+                updated_at: now_ms(),
+                local: true,
+                peer_pubkey,
             });
         self.peer_tasks
             .entry(peer_pubkey)
@@ -105,6 +133,18 @@ impl ComputeStore {
             .map(|entry| entry.value().clone())
             .collect()
     }
+
+    /// Return remote tasks that are queued and ready for execution.
+    pub fn queued_remote_tasks(&self) -> Vec<ComputeTask> {
+        self.tasks
+            .iter()
+            .filter(|entry| {
+                let t = entry.value();
+                !t.local && t.status == TaskStatus::Queued
+            })
+            .map(|entry| entry.value().clone())
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -138,7 +178,31 @@ mod tests {
         let task = store.get_task("task-1").unwrap();
         assert_eq!(task.submit.task_id, "task-1");
         assert_eq!(task.status, TaskStatus::Queued);
+        assert!(!task.local);
         assert!(task.result.is_none());
+    }
+
+    #[test]
+    fn track_submitted_marks_local() {
+        let store = ComputeStore::new();
+        let peer = [1u8; 32];
+        store.track_submitted(peer, make_submit("task-1"));
+
+        let task = store.get_task("task-1").unwrap();
+        assert!(task.local);
+        assert_eq!(task.status, TaskStatus::Queued);
+    }
+
+    #[test]
+    fn queued_remote_tasks_excludes_local() {
+        let store = ComputeStore::new();
+        let peer = [1u8; 32];
+        store.submit(peer, make_submit("remote-1"));
+        store.track_submitted(peer, make_submit("local-1"));
+
+        let queued = store.queued_remote_tasks();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].submit.task_id, "remote-1");
     }
 
     #[test]
