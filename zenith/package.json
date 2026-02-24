@@ -2,7 +2,8 @@
   "name": "zenith",
   "version": "0.1.0",
   "description": "Desktop UI for Summit Protocol",
-  "main": "main.js",
+  "main": "main.cjs",
+  "type": "module",
   "scripts": {
     "start": "electron .",
     "dev": "concurrently \"npm run vite\" \"wait-on http://localhost:5173 && electron .\"",
@@ -30,8 +31,11 @@
     "wait-on": "^7.2.0"
   },
   "dependencies": {
+    "@tailwindcss/vite": "^4.2.1",
+    "d3-force": "^3.0.0",
     "react": "^18.2.0",
-    "react-dom": "^18.2.0"
+    "react-dom": "^18.2.0",
+    "tailwindcss": "^4.2.1"
   },
   "build": {
     "appId": "com.zenith.ui",
@@ -42,19 +46,23 @@
     },
     "files": [
       "dist/**/*",
-      "main.js",
-      "preload.js",
+      "main.cjs",
+      "preload.cjs",
       "assets/**/*"
     ],
     "extraResources": [
       {
         "from": "dist",
         "to": "dist",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "linux": {
-      "target": ["AppImage"],
+      "target": [
+        "AppImage"
+      ],
       "category": "Network",
       "maintainer": "4rc4n4.game@protonmail.com",
       "synopsis": "Summit Protocol Desktop UI"

@@ -1,68 +1,103 @@
-:root {
-  font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
-  line-height: 1.5;
-  font-weight: 400;
+@import "tailwindcss";
 
-  color-scheme: light dark;
-  color: rgba(255, 255, 255, 0.87);
-  background-color: #242424;
-
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
-
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
-}
-a:hover {
-  color: #535bf2;
+@theme {
+  --color-summit-bg: #06080c;
+  --color-summit-surface: #0a0e14;
+  --color-summit-raised: #0f1319;
+  --color-summit-accent: #58a6ff;
+  --color-summit-cream: #c9d1d9;
+  --color-summit-white: #e6edf3;
+  --color-summit-green: #3fb950;
+  --color-summit-red: #f85149;
+  --color-summit-blue: #58a6ff;
+  --color-summit-purple: #bc8cff;
+  --color-summit-border: rgba(88, 166, 255, 0.08);
+  --color-summit-border-bright: rgba(88, 166, 255, 0.15);
+  --color-summit-muted: rgba(201, 209, 217, 0.4);
+  --color-summit-subtle: rgba(201, 209, 217, 0.06);
+  --font-mono: 'Space Mono', monospace;
+  --font-display: 'Space Mono', monospace;
 }
 
-body {
-  margin: 0;
-  display: flex;
-  place-items: center;
-  min-width: 320px;
-  min-height: 100vh;
-}
+@layer base {
+  * { box-sizing: border-box; margin: 0; padding: 0; }
 
-h1 {
-  font-size: 3.2em;
-  line-height: 1.1;
-}
-
-button {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  background-color: #1a1a1a;
-  cursor: pointer;
-  transition: border-color 0.25s;
-}
-button:hover {
-  border-color: #646cff;
-}
-button:focus,
-button:focus-visible {
-  outline: 4px auto -webkit-focus-ring-color;
-}
-
-@media (prefers-color-scheme: light) {
-  :root {
-    color: #213547;
-    background-color: #ffffff;
+  body {
+    background: var(--color-summit-bg);
+    font-family: var(--font-mono);
+    color: var(--color-summit-cream);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
-  a:hover {
-    color: #747bff;
+
+  /* Grid background texture */
+  #root {
+    position: relative;
   }
-  button {
-    background-color: #f9f9f9;
+  #root::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(88, 166, 255, 0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(88, 166, 255, 0.03) 1px, transparent 1px);
+    background-size: 40px 40px;
+    pointer-events: none;
+    z-index: 0;
+    mask-image: radial-gradient(ellipse 80% 60% at 50% 40%, black 20%, transparent 70%);
+  }
+  #root > * {
+    position: relative;
+    z-index: 1;
+  }
+
+  @keyframes pulseRing {
+    0% { transform: scale(1); opacity: 0.5; }
+    70% { transform: scale(2.8); opacity: 0; }
+    100% { transform: scale(2.8); opacity: 0; }
+  }
+
+  @keyframes slideIn {
+    from { transform: translateX(100%); opacity: 0; }
+    to { transform: translateX(0); opacity: 1; }
+  }
+
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(4px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  @keyframes scanline {
+    0% { background-position: 0 0; }
+    100% { background-position: 0 4px; }
+  }
+
+  /* Focus styles */
+  :focus-visible {
+    outline: 1px solid rgba(88, 166, 255, 0.5);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(88, 166, 255, 0.15);
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(88, 166, 255, 0.25);
+  }
+
+  /* Selection */
+  ::selection {
+    background: rgba(88, 166, 255, 0.3);
+    color: #e6edf3;
+  }
+
+  /* Smooth transitions on color-scheme aware elements */
+  button, input, textarea, select {
+    font-family: inherit;
   }
 }
