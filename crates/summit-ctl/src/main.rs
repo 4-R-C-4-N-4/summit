@@ -756,6 +756,12 @@ fn print_result(result: &serde_json::Value) {
     if let Some(error) = result.get("error").and_then(|v| v.as_str()) {
         println!("  │  error        : {}", error.trim());
     }
+    if let Some(files) = result.get("output_files").and_then(|v| v.as_array()) {
+        let names: Vec<&str> = files.iter().filter_map(|v| v.as_str()).collect();
+        if !names.is_empty() {
+            println!("  │  output files : {}", names.join(", "));
+        }
+    }
 }
 
 async fn cmd_compute_submit(port: u16, to: &str, payload_str: &str) -> Result<()> {

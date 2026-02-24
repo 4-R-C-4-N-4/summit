@@ -74,6 +74,8 @@ summit-ctl messages send <pubkey> 'hello world'
 summit-ctl compute submit <pubkey> '{"cmd":"echo","args":["hi"]}'
 summit-ctl compute tasks <pubkey>
 ```
+## Example: distributed computing
+```
   # ── Machine A (submitter) ──────────────────────────────
 
   # 1. Verify both daemons see each other
@@ -96,6 +98,7 @@ summit-ctl compute tasks <pubkey>
 
   # 2. Or filter by sender
   summit-ctl compute tasks <A_pubkey>
+```
 
 ## Design
 
