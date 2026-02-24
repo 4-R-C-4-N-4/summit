@@ -12,6 +12,5 @@ export default defineConfig({
   },
   server: {
     port: 5173,
-    // No proxy needed - app talks directly to localhost:9001
   }
 })

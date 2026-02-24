@@ -56,32 +56,20 @@ function createWindow() {
     console.log('Finished loading');
   });
 
-  // In packaged app, files are in resources/
-  // app.asar is separate from other resources
-  let htmlPath;
   if (app.isPackaged) {
-    // Go up from app.asar to resources, then into dist
-    htmlPath = path.join(process.resourcesPath, 'dist', 'index.html');
+    mainWindow.loadFile(path.join(__dirname, "dist/index.html")).catch(err => {
+      console.error('Load error:', err);
+    });
   } else {
-    htmlPath = path.join(__dirname, 'dist', 'index.html');
-  }
-  console.log('Loading from:', htmlPath);
-
-  mainWindow.loadFile(htmlPath).catch(err => {
-    console.error('Load error:', err);
-  });
-
-  /*
-  // Load the app
-  mainWindow.loadURL('http://localhost:5173');
-  if(isDev){
+    mainWindow.loadURL("http://localhost:5173").catch(err => {
+      console.error('Load error:', err);
+    });
     mainWindow.webContents.openDevTools();
-  }*/
+  }
 
   mainWindow.webContents.on('console-message', (event, level, message) => {
     console.log('Console:', message);
   });
-  mainWindow.webContents.openDevTools();
 }
 
 // Create system tray

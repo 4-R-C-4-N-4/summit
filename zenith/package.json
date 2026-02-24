@@ -9,7 +9,7 @@
     "dev": "concurrently \"npm run vite\" \"wait-on http://localhost:5173 && electron .\"",
     "vite": "vite",
     "build": "vite build",
-    "build:electron": "npm run build && electron-builder --linux"
+    "build:electron": "npm run build && electron-builder -l"
   },
   "keywords": [
     "astral",
@@ -50,35 +50,15 @@
       "preload.cjs",
       "assets/**/*"
     ],
-    "extraResources": [
-      {
-        "from": "dist",
-        "to": "dist",
-        "filter": [
-          "**/*"
-        ]
-      }
-    ],
+    "extraResources": [],
     "linux": {
+      "icon": "assets/tray-icon.png",
       "target": [
         "AppImage"
       ],
       "category": "Network",
       "maintainer": "4rc4n4.game@protonmail.com",
       "synopsis": "Summit Protocol Desktop UI"
-    },
-    "mac": {
-      "target": [
-        "dmg",
-        "zip"
-      ],
-      "category": "public.app-category.networking"
-    },
-    "win": {
-      "target": [
-        "nsis",
-        "portable"
-      ]
     }
   }
 }

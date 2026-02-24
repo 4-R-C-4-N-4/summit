@@ -229,17 +229,33 @@ jobs:
           cache: 'npm'
           cache-dependency-path: zenith/package-lock.json
 
+      - name: Install Linux deps
+        run: |
+            sudo apt-get update
+            sudo apt-get install -y \
+            libfuse2 \
+            desktop-file-utils \
+            fakeroot
+
       - name: Build UI
+        env:
+          CI: true
         run: |
           cd zenith
-          npm i
+          npm ci
           npm run build:electron
 
       - name: Find AppImage
         id: appimage
         run: |
-          APPIMAGE=$(ls zenith/dist-electron/*.AppImage | head -1)
-          echo "path=$APPIMAGE" >> $GITHUB_OUTPUT
+            APPIMAGE=$(find zenith/dist-electron -name "*.AppImage" | head -1)
+
+            if [ -z "$APPIMAGE" ]; then
+            echo "No AppImage found!"
+            exit 1
+            fi
+
+            echo "path=$APPIMAGE" >> $GITHUB_OUTPUT
 
       - name: Upload AppImage
         uses: softprops/action-gh-release@v2
