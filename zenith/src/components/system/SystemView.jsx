@@ -2,6 +2,7 @@ import { useDaemon } from '../../hooks/useDaemon';
 import SessionList from './SessionList';
 import CachePanel from './CachePanel';
 import ServicesList from './ServicesList';
+import SettingsPanel from './SettingsPanel';
 
 export default function SystemView() {
   const { status } = useDaemon();
@@ -32,6 +33,7 @@ export default function SystemView() {
         <SessionList />
         <CachePanel />
         <ServicesList />
+        <SettingsPanel />
       </div>
     </div>
   );

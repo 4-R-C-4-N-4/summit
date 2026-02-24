@@ -2,22 +2,23 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electron', {
-  // Check if summitd is running
+  // Daemon control
   checkDaemon: () => ipcRenderer.invoke('check-daemon'),
-  
-  // Start summitd
-  startDaemon: (interface) => ipcRenderer.invoke('start-daemon', interface),
-  
-  // Stop summitd
+  startDaemon: (iface) => ipcRenderer.invoke('start-daemon', iface),
   stopDaemon: () => ipcRenderer.invoke('stop-daemon'),
-  
+
+  // Config
+  readConfig: () => ipcRenderer.invoke('read-config'),
+  writeConfig: (updates) => ipcRenderer.invoke('write-config', updates),
+
+  // Shell
+  openPath: (p) => ipcRenderer.invoke('open-path', p),
+
   // Platform info
   platform: process.platform,
-  
-  // Version info
   versions: {
     node: process.versions.node,
     chrome: process.versions.chrome,
-    electron: process.versions.electron
-  }
+    electron: process.versions.electron,
+  },
 });
