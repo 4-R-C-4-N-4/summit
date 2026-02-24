@@ -148,33 +148,45 @@ pub async fn run(
     }
 }
 
-/// Execute a task payload. Expected shape: `{"cmd": "...", "args": ["..."]}`.
+/// Execute a task payload.
+///
+/// Supported formats:
+///   `{"run": "hostnamectl > out.txt"}`  — shell command (via `sh -c`)
+///   `{"cmd": "echo", "args": ["hi"]}`  — direct exec (no shell)
 async fn execute_task(
     payload: &serde_json::Value,
     task_dir: &Path,
 ) -> Result<serde_json::Value, String> {
-    let cmd = payload
-        .get("cmd")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| "payload missing \"cmd\" string".to_string())?;
-
-    let args: Vec<&str> = payload
-        .get("args")
-        .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
-        .unwrap_or_default();
-
     // Ensure task directory exists.
     tokio::fs::create_dir_all(task_dir)
         .await
         .map_err(|e| format!("failed to create task dir: {e}"))?;
 
-    let output = tokio::process::Command::new(cmd)
-        .args(&args)
-        .current_dir(task_dir)
-        .output()
-        .await
-        .map_err(|e| format!("failed to spawn '{}': {}", cmd, e))?;
+    let output = if let Some(run) = payload.get("run").and_then(|v| v.as_str()) {
+        // Shell mode: pipes, redirections, globs all work.
+        tokio::process::Command::new("sh")
+            .args(["-c", run])
+            .current_dir(task_dir)
+            .output()
+            .await
+            .map_err(|e| format!("failed to spawn shell: {e}"))?
+    } else if let Some(cmd) = payload.get("cmd").and_then(|v| v.as_str()) {
+        // Direct exec mode: no shell interpretation.
+        let args: Vec<&str> = payload
+            .get("args")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default();
+
+        tokio::process::Command::new(cmd)
+            .args(&args)
+            .current_dir(task_dir)
+            .output()
+            .await
+            .map_err(|e| format!("failed to spawn '{}': {e}", cmd))?
+    } else {
+        return Err("payload must contain \"run\" (shell string) or \"cmd\" (direct exec)".into());
+    };
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();

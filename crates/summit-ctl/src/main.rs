@@ -818,7 +818,8 @@ fn print_usage() {
     println!("Compute");
     println!("  compute tasks                   List all compute tasks");
     println!("  compute tasks <pubkey>          List compute tasks from a specific peer");
-    println!("  compute submit <pubkey> <json>  Submit a compute task to a peer");
+    println!("  compute submit <pubkey> -- <cmd>  Submit a shell command to a peer");
+    println!("  compute submit <pubkey> <json>    Submit a JSON task payload");
     println!();
     println!("Cache & Schema");
     println!("  cache                           Show cache statistics");
@@ -838,8 +839,9 @@ fn print_usage() {
     println!("  summit-ctl send document.pdf");
     println!("  summit-ctl send photo.jpg --peer 99b1db0b1849c7f8...");
     println!("  summit-ctl messages send 99b1db0b... 'hello world'");
-    println!("  summit-ctl compute submit 99b1db0b... '{{\"cmd\":\"echo\",\"args\":[\"hi\"]}}'");
-    println!("  summit-ctl compute tasks 99b1db0b...");
+    println!("  summit-ctl compute submit 99b1db0b... -- uname -a");
+    println!("  summit-ctl compute submit 99b1db0b... -- hostnamectl > info.txt");
+    println!("  summit-ctl compute tasks");
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -894,6 +896,18 @@ async fn main() -> Result<()> {
         }
 
         return cmd_send(port, path, target_peer, target_session).await;
+    }
+
+    // Handle: compute submit <pubkey> -- <shell command...>
+    // Everything after "--" is joined into a single shell string.
+    if remaining_refs.len() >= 4 && remaining_refs[0] == "compute" && remaining_refs[1] == "submit"
+    {
+        if let Some(sep) = remaining_refs.iter().position(|s| *s == "--") {
+            let to = remaining_refs[2];
+            let shell_cmd = remaining[sep + 1..].join(" ");
+            let payload = serde_json::json!({ "run": shell_cmd }).to_string();
+            return cmd_compute_submit(port, to, &payload).await;
+        }
     }
 
     match remaining_refs.as_slice() {
