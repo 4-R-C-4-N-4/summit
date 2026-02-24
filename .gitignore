@@ -49,7 +49,7 @@ zenith/node_modules/
 /dist/
 node_modules/
 SHASUMS256.txt
-**/package-lock.json
+
 compile_commands.json
 .envrc
 
