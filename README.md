@@ -71,8 +71,12 @@ summit-ctl cache                      # cache stats
 summit-ctl sessions inspect <id>      # session details
 summit-ctl shutdown                   # stop daemon
 summit-ctl messages send <pubkey> 'hello world'
-summit-ctl compute submit <pubkey> '{"cmd":"echo","args":["hi"]}'
-summit-ctl compute tasks <pubkey>
+summit-ctl compute submit <pubkey> -- "hostnamectl"
+# Responses with stdout provided as text response
+summit-ctl compute submit <pubkey> -- "hostnamectl > info.txt"
+# files generated are automatically broadcast back to sender
+summit-ctl compute tasks             # List all distributed tasks
+summit-ctl compute tasks <pubkey>    # List distributed tasks per peer
 ```
 ## Example: distributed computing
 ```
@@ -85,7 +89,7 @@ summit-ctl compute tasks <pubkey>
   summit-ctl services
 
   # 3. Copy Machine B's public key from peers output, submit a task
-  summit-ctl compute submit <B_pubkey> '{"cmd":"echo","args":["hello"]}'
+  summit-ctl compute submit <B_pubkey> "hostnamectl > info.txt"
 
   # 4. Check task status — should now show "Queued" (ack received from B)
   summit-ctl compute tasks
