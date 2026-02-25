@@ -18,8 +18,10 @@ pub async fn serve(state: ApiState, port: u16) -> anyhow::Result<()> {
         .route("/peers", get(handlers::handle_peers))
         .route("/cache", get(handlers::handle_cache))
         .route("/cache/clear", post(handlers::handle_cache_clear))
-        .route("/send", post(handlers::handle_send)
-            .layer(DefaultBodyLimit::max(512 * 1024 * 1024)))
+        .route(
+            "/send",
+            post(handlers::handle_send).layer(DefaultBodyLimit::max(512 * 1024 * 1024)),
+        )
         .route("/files", get(handlers::handle_files))
         .route("/trust", get(handlers::handle_trust_list))
         .route("/trust/add", post(handlers::handle_trust_add))
