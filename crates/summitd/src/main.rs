@@ -1,20 +1,19 @@
 //! summitd — Summit peer-to-peer daemon.
-use std::net::{Ipv6Addr, SocketAddr, SocketAddrV6};
+
+use std::net::{Ipv6Addr, SocketAddrV6};
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use tokio::net::UdpSocket;
-use tokio::sync::Mutex;
-use zerocopy::AsBytes;
 
+use summit_core::config::{data_dir, SummitConfig};
 use summit_core::crypto::Keypair;
-use summit_core::wire::Contract;
+use summit_core::wire::{service_hash, Contract};
 
 use summit_services::{
-    new_registry, new_session_table, ActiveSession, ChunkCache, FileReassembler, MessageStore,
-    SendTarget, ServiceOnSession, SessionMeta, TokenBucket, TrustLevel, TrustRegistry,
-    UntrustedBuffer,
+    new_registry, new_session_table, ChunkCache, ComputeStore, FileReassembler, MessageStore,
+    SendTarget, TrustRegistry, UntrustedBuffer,
 };
 
 mod capability;
@@ -31,6 +30,15 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
+
+    // Load config
+    if let Err(e) = SummitConfig::write_default_if_missing() {
+        tracing::warn!(error = %e, "failed to write default config");
+    }
+    let config = SummitConfig::load().unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "failed to load config, using defaults");
+        SummitConfig::default()
+    });
 
     let interface = std::env::args()
         .nth(1)
@@ -51,68 +59,99 @@ async fn main() -> Result<()> {
     };
     tracing::info!(addr = %local_link_addr, "local link-local address");
 
-    // Bind session socket to our link-local address so responses come back correctly
-    let session_listen_socket =
+    // Bind session socket
+    let session_listen_socket = Arc::new(
         UdpSocket::bind(SocketAddrV6::new(local_link_addr, 0, 0, interface_index))
             .await
-            .context("failed to bind session listen socket")?;
+            .context("failed to bind session listen socket")?,
+    );
+    let session_listen_port = session_listen_socket.local_addr()?.port();
 
-    // Generate a fresh keypair for this run
+    // Keypair
     let keypair = Arc::new(Keypair::generate());
     tracing::info!(public_key = hex::encode(keypair.public), "keypair ready");
 
-    // Build capability announcement with our real public key
-    // let test_capability = CapabilityAnnouncement {
-    //     capability_hash: summit_core::crypto::hash(b"summit.test"),
-    //     public_key:      [0u8; 32],
-    //         version:         1,
-    //         session_port:    9001,
-    //         chunk_port:      9002,
-    //         contract:        Contract::Bulk as u8,
-    //         flags:           0,
-    // };
-    //
-    // let capabilities = Arc::new(vec![test_capability.clone()]);
+    // Shared state
     let registry = new_registry();
     let sessions = new_session_table();
-
+    let handshake_tracker = session::HandshakeTracker::shared();
     let message_store = MessageStore::new();
-
-    use summit_services::ComputeStore;
     let compute_store = ComputeStore::new();
 
-    // Handshake state tracking (shared between initiator and listener)
-    let handshake_tracker = session::HandshakeTracker::shared();
-
-    let session_listen_port = session_listen_socket.local_addr()?.port();
-
-    // let session_send_socket = UdpSocket::bind("[::]:0").await
-    // .context("failed to bind session send socket")?;
-
-    let session_listen_socket = Arc::new(session_listen_socket);
-    // let session_send_socket = Arc::new(session_send_socket);
-
-    // Create cache (use /tmp for testing, /var/cache/summit for production)
+    // Chunk cache
     let cache_root = std::env::var("SUMMIT_CACHE")
-        .unwrap_or_else(|_| format!("/tmp/summit-cache-{}", std::process::id()));
+        .unwrap_or_else(|_| data_dir().join("cache").to_string_lossy().into_owned());
     let cache = ChunkCache::new(&cache_root)?;
     tracing::info!(root = %cache_root, "chunk cache initialized");
 
-    // Load config
-    use capability::broadcast::ServiceEntry;
-    use summit_core::config::SummitConfig;
-    use summit_core::wire::service_hash;
+    // Trust
+    let trust_registry = TrustRegistry::new();
+    trust_registry.apply_config(config.trust.auto_trust, &config.trust.trusted_peers);
+    if config.trust.auto_trust {
+        tracing::warn!("auto-trust enabled — all discovered peers will be trusted");
+    }
+    let untrusted_buffer = UntrustedBuffer::new();
 
-    let config = {
-        if let Err(e) = SummitConfig::write_default_if_missing() {
-            tracing::warn!(error = %e, "failed to write default config");
+    // Outbound chunk queue
+    let (chunk_tx, chunk_rx) = mpsc::unbounded_channel::<(SendTarget, chunk::OutgoingChunk)>();
+
+    // File reassembler
+    let file_transfer_path = config.services.file_transfer_settings.storage_path.clone();
+    tracing::info!(path = %file_transfer_path.display(), "file transfer storage path");
+    let reassembler = Arc::new(FileReassembler::new(file_transfer_path.clone()));
+
+    // Service dispatcher
+    let dispatcher = {
+        use dispatch::ServiceDispatcher;
+        use summit_services::{ChunkService, ComputeService, KnownSchema, MessagingService};
+        let mut d = ServiceDispatcher::new();
+        let reassembler_svc = reassembler.clone() as Arc<dyn ChunkService>;
+        d.register(reassembler_svc.clone());
+        d.register_schema(KnownSchema::FileData.id(), reassembler_svc.clone());
+        d.register_schema(KnownSchema::FileMetadata.id(), reassembler_svc);
+        let messaging = Arc::new(MessagingService::new(message_store.clone()));
+        d.register(messaging as Arc<dyn ChunkService>);
+        if config.services.compute {
+            let compute_svc = Arc::new(ComputeService::new(
+                compute_store.clone(),
+                config.services.compute_settings.clone(),
+                chunk_tx.clone(),
+            ));
+            d.register(compute_svc as Arc<dyn ChunkService>);
         }
-        SummitConfig::load().unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "failed to load config, using defaults");
-            SummitConfig::default()
-        })
+        Arc::new(d)
     };
 
+    // Broadcast services list
+    let mut broadcast_services = Vec::new();
+    if config.services.file_transfer {
+        broadcast_services.push(broadcast::ServiceEntry {
+            hash: service_hash(b"summit.file_transfer"),
+            contract: Contract::Bulk,
+            chunk_port: 0,
+        });
+    }
+    if config.services.messaging {
+        broadcast_services.push(broadcast::ServiceEntry {
+            hash: service_hash(b"summit.messaging"),
+            contract: Contract::Bulk,
+            chunk_port: 0,
+        });
+    }
+    if config.services.stream_udp {
+        broadcast_services.push(broadcast::ServiceEntry {
+            hash: service_hash(b"summit.stream_udp"),
+            contract: Contract::Realtime,
+            chunk_port: config.network.chunk_port,
+        });
+    }
+    if config.services.compute {
+        broadcast_services.push(broadcast::ServiceEntry {
+            hash: service_hash(b"summit.compute"),
+            contract: Contract::Bulk,
+            chunk_port: 0,
+        });
+    }
     tracing::info!(
         file_transfer = config.services.file_transfer,
         messaging = config.services.messaging,
@@ -121,47 +160,24 @@ async fn main() -> Result<()> {
         "services enabled"
     );
 
-    // Build service list from config
-    let mut broadcast_services = Vec::new();
+    // ── Shutdown channel ─────────────────────────────────────────────────────
+    let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
 
-    if config.services.file_transfer {
-        broadcast_services.push(ServiceEntry {
-            hash: service_hash(b"summit.file_transfer"),
-            contract: Contract::Bulk,
-            chunk_port: 0,
+    {
+        let shutdown = shutdown_tx.clone();
+        tokio::spawn(async move {
+            tokio::signal::ctrl_c().await.ok();
+            tracing::info!("shutdown signal received");
+            let _ = shutdown.send(());
         });
     }
 
-    if config.services.messaging {
-        broadcast_services.push(ServiceEntry {
-            hash: service_hash(b"summit.messaging"),
-            contract: Contract::Bulk,
-            chunk_port: 0,
-        });
-    }
+    // ── Spawn tasks ──────────────────────────────────────────────────────────
 
-    if config.services.stream_udp {
-        broadcast_services.push(ServiceEntry {
-            hash: service_hash(b"summit.stream_udp"),
-            contract: Contract::Realtime,
-            chunk_port: config.network.chunk_port,
-        });
-    }
-
-    if config.services.compute {
-        broadcast_services.push(ServiceEntry {
-            hash: service_hash(b"summit.compute"),
-            contract: Contract::Bulk,
-            chunk_port: 0,
-        });
-    }
-
-    // Capability tasks
     let broadcast_task = {
         let keypair = keypair.clone();
-
         tokio::spawn(async move {
-            if let Err(e) = capability::broadcast::broadcast_loop(
+            if let Err(e) = broadcast::broadcast_loop(
                 keypair,
                 interface_index,
                 session_listen_port,
@@ -182,473 +198,31 @@ async fn main() -> Result<()> {
 
     let expiry_task = tokio::spawn(listener::expiry_loop(registry.clone()));
 
-    // Get our link-local address by examining the socket's local address
-    // Connect to peer's address to determine which local address we use
-    let local_link_addr: Ipv6Addr = {
-        let probe = std::net::UdpSocket::bind("[::]:0")?;
-        // Bind to the multicast group on our interface using scope_id
-        let dest = std::net::SocketAddrV6::new("ff02::1".parse()?, 9000, 0, interface_index);
-        probe.connect(dest)?;
-        match probe.local_addr()? {
-            std::net::SocketAddr::V6(v6) => *v6.ip(),
-            _ => anyhow::bail!("expected IPv6 local address"),
-        }
-    };
-    tracing::info!(addr = %local_link_addr, "local link-local address");
-    let session_listener = {
-        let socket = session_listen_socket.clone();
-        let keypair = keypair.clone();
-        let sessions = sessions.clone();
-        let tracker = handshake_tracker.clone();
-        let local_addr = local_link_addr;
-        let registry_ref = registry.clone();
+    let session_listener_task = tokio::spawn(
+        session::listener::SessionListener::new(
+            session_listen_socket.clone(),
+            keypair.clone(),
+            sessions.clone(),
+            handshake_tracker.clone(),
+            local_link_addr,
+            registry.clone(),
+            shutdown_tx.subscribe(),
+        )
+        .run(),
+    );
+
+    let session_initiator_task = tokio::spawn(
+        session::initiator::SessionInitiator::new(
+            session_listen_socket,
+            keypair.clone(),
+            registry.clone(),
+            handshake_tracker,
+            interface_index,
+            shutdown_tx.subscribe(),
+        )
+        .run(),
+    );
 
-        tokio::spawn(async move {
-            use summit_core::crypto::NoiseResponder;
-            use summit_core::wire::{HandshakeComplete, HandshakeInit, HandshakeResponse};
-            use zerocopy::FromBytes;
-
-            const HANDSHAKE_INIT_SIZE: usize = std::mem::size_of::<HandshakeInit>();
-            const HANDSHAKE_RESPONSE_SIZE: usize = std::mem::size_of::<HandshakeResponse>();
-            const HANDSHAKE_COMPLETE_SIZE: usize = std::mem::size_of::<HandshakeComplete>();
-
-            let mut buf = vec![0u8; 512];
-            let mut cleanup_interval = tokio::time::interval(Duration::from_secs(5));
-
-            loop {
-                tokio::select! {
-                    _ = cleanup_interval.tick() => {
-                        tracker.lock().await.cleanup_stale();
-                    }
-
-                    result = socket.recv_from(&mut buf) => {
-                        let (len, peer_addr) = match result {
-                            Ok(r) => r,
-                     Err(e) => {
-                         tracing::warn!(error = %e, "recv_from failed");
-                         continue;
-                     }
-                        };
-
-                        // Extract IP for tracker lookups
-                        let peer_ip = match peer_addr {
-                            SocketAddr::V6(v6) => *v6.ip(),
-                     _ => { tracing::warn!("ignoring IPv4 peer"); continue; }
-                        };
-
-                        // Ignore packets from ourselves (bridge loopback)
-                        if peer_ip == local_addr {
-                            tracing::trace!("ignoring loopback from own IP");
-                            continue;
-                        }
-
-                        let data = &buf[..len];
-
-                        if len == HANDSHAKE_INIT_SIZE {
-                            let init = match HandshakeInit::read_from(data) {
-                                Some(m) => m,
-                     None => { tracing::warn!("failed to parse HandshakeInit"); continue; }
-                            };
-
-                            tracing::debug!(peer_addr = %peer_addr, "received HandshakeInit");
-
-                            // Deduplicate
-                            {
-                                let t = tracker.lock().await;
-                                if t.has_initiator(&peer_ip) || t.has_initiator_waiting(&peer_ip) {
-                                    tracing::debug!(%peer_addr, "already initiating to this peer, ignoring HandshakeInit");
-                                    continue;
-                                }
-                                if t.has_responder(&peer_ip) || t.has_responder_waiting(&peer_ip) {
-                                    tracing::debug!(%peer_addr, "duplicate HandshakeInit, ignoring");
-                                    continue;
-                                }
-                            }
-
-                            // Create chunk socket
-                            let chunk_socket = match UdpSocket::bind("[::]:0").await {
-                                Ok(s) => Arc::new(s),
-                     Err(e) => { tracing::warn!(error = %e, "failed to bind chunk socket"); continue; }
-                            };
-                            let local_chunk_port = match chunk_socket.local_addr() {
-                                Ok(addr) => addr.port(),
-                     Err(e) => { tracing::warn!(error = %e, "failed to get chunk port"); continue; }
-                            };
-
-                            // Create noise responder
-                            let noise = match NoiseResponder::new(&keypair) {
-                                Ok(n) => n,
-                     Err(e) => { tracing::warn!(error = %e, "failed to create noise responder"); continue; }
-                            };
-                            let responder_nonce = *noise.nonce();
-
-                            // Process Noise message 1
-                            let (pending, msg2) = match noise.respond(&init.noise_msg, &init.nonce) {
-                                Ok(r) => r,
-                     Err(e) => { tracing::warn!(error = %e, "noise.respond failed"); continue; }
-                            };
-
-                            // Send HandshakeResponse
-                            let response = HandshakeResponse {
-                                nonce:     responder_nonce,
-                                noise_msg: match msg2.try_into() {
-                                    Ok(m) => m,
-                     Err(_) => { tracing::warn!("msg2 wrong size"); continue; }
-                                },
-                            };
-                            if let Err(e) = socket.send_to(response.as_bytes(), peer_addr).await {
-                                tracing::warn!(error = %e, "failed to send HandshakeResponse");
-                                continue;
-                            }
-                            tracing::debug!(peer_addr = %peer_addr, "sent HandshakeResponse");
-
-                            // Look up peer's public key from registry.
-                            // The initiator must already be in our registry
-                            // (we received their capability announcement) for
-                            // the session to be routable. If not found, reject
-                            // the handshake — it will be retried on the next
-                            // initiator tick once discovery catches up.
-                            let peer_pubkey = match registry_ref.iter()
-                                .find(|entry| entry.value().addr == peer_ip)
-                                .map(|entry| *entry.key())
-                            {
-                                Some(pk) => pk,
-                                None => {
-                                    tracing::warn!(
-                                        %peer_addr,
-                                        "HandshakeInit from peer not yet in registry, deferring"
-                                    );
-                                    continue;
-                                }
-                            };
-
-                            tracker.lock().await.add_responder(peer_ip, peer_pubkey, pending, local_chunk_port, chunk_socket);
-
-                        } else if len == HANDSHAKE_RESPONSE_SIZE {
-                            let response = match HandshakeResponse::read_from(data) {
-                                Some(m) => m,
-                     None => { tracing::warn!("failed to parse HandshakeResponse"); continue; }
-                            };
-
-                            tracing::debug!(peer_addr = %peer_addr, "received HandshakeResponse");
-
-                            // Deduplicate
-                            {
-                                let t = tracker.lock().await;
-                                if t.has_initiator_waiting(&peer_ip) {
-                                    tracing::debug!(%peer_addr, "duplicate HandshakeResponse, ignoring");
-                                    continue;
-                                }
-                            }
-
-                            let state = match tracker.lock().await.remove_initiator(&peer_ip) {
-                                Some(s) => s,
-                     None => {
-                         tracing::warn!(%peer_addr, "HandshakeResponse for unknown handshake");
-                         continue;
-                     }
-                            };
-
-                            // Finish Noise handshake
-                            let (mut session, msg3) = match state.noise.finish(&response.noise_msg, &response.nonce) {
-                                Ok(r) => r,
-                     Err(e) => { tracing::warn!(error = %e, "noise.finish failed"); continue; }
-                            };
-
-                            // Send HandshakeComplete
-                            let complete = HandshakeComplete {
-                                noise_msg: match msg3.try_into() {
-                                    Ok(m) => m,
-                     Err(_) => { tracing::warn!("msg3 wrong size"); continue; }
-                                },
-                            };
-                            if let Err(e) = socket.send_to(complete.as_bytes(), peer_addr).await {
-                                tracing::warn!(error = %e, "failed to send HandshakeComplete");
-                                continue;
-                            }
-                            tracing::debug!(peer_addr = %peer_addr, "sent HandshakeComplete");
-
-                            // Send our chunk_port encrypted
-                            let chunk_port_msg = state.chunk_socket_port.to_le_bytes();
-                            let mut encrypted = Vec::new();
-                            if let Err(e) = session.encrypt(&chunk_port_msg, &mut encrypted) {
-                                tracing::warn!(error = %e, "failed to encrypt chunk_port"); continue;
-                            }
-                            if let Err(e) = socket.send_to(&encrypted, peer_addr).await {
-                                tracing::warn!(error = %e, "failed to send chunk_port"); continue;
-                            }
-                            tracing::debug!(peer_addr = %peer_addr, "sent chunk_port (initiator)");
-
-                            tracker.lock().await.add_initiator_waiting_chunk(
-                                peer_ip, session, state.chunk_socket, state.chunk_socket_port, state.peer_pubkey
-                            );
-
-                        } else if len == HANDSHAKE_COMPLETE_SIZE {
-                            let complete = match HandshakeComplete::read_from(data) {
-                                Some(m) => m,
-                     None => { tracing::warn!("failed to parse HandshakeComplete"); continue; }
-                            };
-
-                            tracing::debug!(peer_addr = %peer_addr, "received HandshakeComplete");
-
-                            let state = match tracker.lock().await.remove_responder(&peer_ip) {
-                                Some(s) => s,
-                     None => {
-                         tracing::warn!(%peer_addr, "HandshakeComplete for unknown handshake");
-                         continue;
-                     }
-                            };
-
-                            // Finish Noise handshake
-                            let session = match state.pending.finish(&complete.noise_msg) {
-                                Ok(s) => s,
-                     Err(e) => { tracing::warn!(error = %e, "pending.finish failed"); continue; }
-                            };
-                            tracing::debug!(peer_addr = %peer_addr, "noise handshake complete (responder), waiting for chunk_port");
-
-                            tracker.lock().await.add_responder_waiting_chunk(
-                                peer_ip, session, state.chunk_socket, state.chunk_socket_port, state.peer_pubkey
-                            );
-
-                        } else {
-                            // Encrypted message — chunk_port exchange
-                            tracing::debug!(peer_addr = %peer_addr, len, "received encrypted message (chunk_port exchange)");
-
-                            let mut tracker_lock = tracker.lock().await;
-
-                            if let Some(mut state) = tracker_lock.remove_initiator_waiting(&peer_ip) {
-                                drop(tracker_lock);
-
-                                let mut decrypted = Vec::new();
-                                if let Err(e) = state.session.decrypt(data, &mut decrypted) {
-                                    tracing::warn!(error = %e, "failed to decrypt peer chunk_port"); continue;
-                                }
-                                if decrypted.len() < 2 {
-                                    tracing::warn!("chunk_port message too short"); continue;
-                                }
-
-                                let peer_chunk_port = u16::from_le_bytes([decrypted[0], decrypted[1]]);
-                                let session_id = state.session.session_id;
-
-                                use std::collections::HashMap;
-                                let mut active_services = HashMap::new();
-                                active_services.insert(
-                                    summit_core::wire::service_hash(b"summit.file_transfer"),
-                                    ServiceOnSession { contract: Contract::Bulk, chunk_port: 0 },
-                                );
-                                active_services.insert(
-                                    summit_core::wire::service_hash(b"summit.messaging"),
-                                    ServiceOnSession { contract: Contract::Bulk, chunk_port: 0 },
-                                );
-                                active_services.insert(
-                                    summit_core::wire::service_hash(b"summit.compute"),
-                                    ServiceOnSession { contract: Contract::Bulk, chunk_port: 0 },
-                                );
-
-                                sessions.insert(session_id, ActiveSession {
-                                    meta: SessionMeta {
-                                        session_id,
-                                        peer_addr,
-                                        chunk_port: peer_chunk_port,
-                                        established_at: std::time::Instant::now(),
-                                        peer_pubkey: state.peer_pubkey,
-                                        active_services,
-                                    },
-                                    crypto: Arc::new(Mutex::new(state.session)),
-                                    socket: state.chunk_socket,
-                                    bucket: Mutex::new(TokenBucket::new(Contract::Bulk)),
-                                });
-
-                                tracing::info!(
-                                    peer_addr = %peer_addr,
-                                    session_id = hex::encode(session_id),
-                                               peer_chunk_port,
-                                               "session established (initiator)"
-                                );
-
-                            } else if let Some(mut state) = tracker_lock.remove_responder_waiting(&peer_ip) {
-                                drop(tracker_lock);
-
-                                let mut decrypted = Vec::new();
-                                if let Err(e) = state.session.decrypt(data, &mut decrypted) {
-                                    tracing::warn!(error = %e, "failed to decrypt initiator chunk_port"); continue;
-                                }
-                                if decrypted.len() < 2 {
-                                    tracing::warn!("chunk_port message too short"); continue;
-                                }
-
-                                let peer_chunk_port = u16::from_le_bytes([decrypted[0], decrypted[1]]);
-
-                                // Send our chunk_port back
-                                let chunk_port_msg = state.local_chunk_port.to_le_bytes();
-                                let mut encrypted = Vec::new();
-                                if let Err(e) = state.session.encrypt(&chunk_port_msg, &mut encrypted) {
-                                    tracing::warn!(error = %e, "failed to encrypt our chunk_port"); continue;
-                                }
-                                if let Err(e) = socket.send_to(&encrypted, peer_addr).await {
-                                    tracing::warn!(error = %e, "failed to send our chunk_port"); continue;
-                                }
-
-                                let session_id = state.session.session_id;
-
-                                let mut active_services_r = std::collections::HashMap::new();
-                                active_services_r.insert(
-                                    summit_core::wire::service_hash(b"summit.file_transfer"),
-                                    ServiceOnSession { contract: Contract::Bulk, chunk_port: 0 },
-                                );
-                                active_services_r.insert(
-                                    summit_core::wire::service_hash(b"summit.messaging"),
-                                    ServiceOnSession { contract: Contract::Bulk, chunk_port: 0 },
-                                );
-                                active_services_r.insert(
-                                    summit_core::wire::service_hash(b"summit.compute"),
-                                    ServiceOnSession { contract: Contract::Bulk, chunk_port: 0 },
-                                );
-
-                                sessions.insert(session_id, ActiveSession {
-                                    meta: SessionMeta {
-                                        session_id,
-                                        peer_addr,
-                                        chunk_port: peer_chunk_port,
-                                        established_at: std::time::Instant::now(),
-                                        peer_pubkey: state.peer_pubkey,
-                                        active_services: active_services_r,
-                                    },
-                                    crypto: Arc::new(Mutex::new(state.session)),
-                                    socket: state.chunk_socket,
-                                    bucket: Mutex::new(TokenBucket::new(Contract::Bulk)),
-                                });
-
-                                tracing::info!(
-                                    peer_addr = %peer_addr,
-                                    session_id = hex::encode(session_id),
-                                               peer_chunk_port,
-                                               "session established (responder)"
-                                );
-
-                            } else {
-                                drop(tracker_lock);
-                                tracing::debug!(%peer_addr, len, "encrypted message from unknown peer, ignoring");
-                            }
-                        }
-                    }
-                }
-            }
-        })
-    };
-
-    let session_initiator = {
-        let socket = session_listen_socket.clone();
-        let keypair = keypair.clone();
-        let registry = registry.clone();
-        let tracker = handshake_tracker.clone();
-
-        tokio::spawn(async move {
-            use summit_core::crypto::NoiseInitiator;
-            use summit_core::wire::HandshakeInit;
-
-            let mut interval = tokio::time::interval(Duration::from_secs(3));
-            let mut attempted = std::collections::HashSet::new();
-
-            loop {
-                interval.tick().await;
-                tracing::debug!(peers = registry.len(), "initiator tick");
-
-                for peer in registry.iter() {
-                    let peer_pubkey: [u8; 32] = *peer.key();
-                    let entry = peer.value();
-
-                    if attempted.contains(&peer_pubkey) {
-                        continue;
-                    }
-
-                    // Only initiate if our public key is lower than peer's
-                    if keypair.public >= entry.public_key {
-                        tracing::debug!(
-                            our_key = hex::encode(&keypair.public[..4]),
-                            peer_key = hex::encode(&entry.public_key[..4]),
-                            "peer has lower key, waiting"
-                        );
-                        continue;
-                    }
-                    tracing::debug!(
-                        our_key = hex::encode(&keypair.public[..4]),
-                        peer_key = hex::encode(&entry.public_key[..4]),
-                        "we have lower key, initiating"
-                    );
-
-                    // Only mark attempted if we're actually initiating
-                    attempted.insert(peer_pubkey);
-
-                    let peer_addr = SocketAddr::V6(SocketAddrV6::new(
-                        entry.addr,
-                        entry.session_port,
-                        0,
-                        interface_index,
-                    ));
-
-                    tracing::debug!(peer_addr = %peer_addr, "initiating handshake");
-
-                    // Create chunk socket
-                    let chunk_socket = match UdpSocket::bind("[::]:0").await {
-                        Ok(s) => Arc::new(s),
-                        Err(e) => {
-                            tracing::warn!(error = %e, "failed to bind chunk socket");
-                            continue;
-                        }
-                    };
-
-                    let local_chunk_port = match chunk_socket.local_addr() {
-                        Ok(addr) => addr.port(),
-                        Err(e) => {
-                            tracing::warn!(error = %e, "failed to get chunk socket addr");
-                            continue;
-                        }
-                    };
-
-                    // Create noise initiator
-                    let (noise, msg1) = match NoiseInitiator::new(&keypair) {
-                        Ok(r) => r,
-                        Err(e) => {
-                            tracing::warn!(error = %e, "failed to create noise initiator");
-                            continue;
-                        }
-                    };
-
-                    // Build HandshakeInit
-                    let init = HandshakeInit {
-                        service_hash: summit_core::wire::service_hash(b"summit.file_transfer"),
-                        noise_msg: match msg1.try_into() {
-                            Ok(m) => m,
-                            Err(_) => {
-                                tracing::warn!("msg1 wrong size");
-                                continue;
-                            }
-                        },
-                        nonce: *noise.nonce(),
-                    };
-
-                    // Send HandshakeInit
-                    if let Err(e) = socket.send_to(init.as_bytes(), peer_addr).await {
-                        tracing::warn!(error = %e, "failed to send HandshakeInit");
-                        continue;
-                    }
-
-                    let peer_ip = entry.addr;
-                    // Track this initiated handshake
-                    tracker.lock().await.add_initiator(
-                        peer_ip,
-                        peer_pubkey,
-                        noise,
-                        chunk_socket,
-                        local_chunk_port,
-                    );
-                }
-            }
-        })
-    };
-
-    // Print session table every 5 seconds
     let session_printer = {
         let sessions = sessions.clone();
         tokio::spawn(async move {
@@ -659,292 +233,41 @@ async fn main() -> Result<()> {
                 for s in sessions.iter() {
                     tracing::info!(
                         session_id = hex::encode(s.meta.session_id),
-                                   peer = %s.meta.peer_addr,
-                                   "  session"
+                        peer = %s.meta.peer_addr,
+                        "  session"
                     );
                 }
             }
         })
     };
-    // Delivery tracker
+
     let delivery_tracker = delivery::DeliveryTracker::new();
 
-    // File reassembler - watches incoming chunks, detects file metadata, reassembles
-    let file_transfer_path = config.services.file_transfer_settings.storage_path.clone();
-    tracing::info!(path = %file_transfer_path.display(), "file transfer storage path");
-    let reassembler = Arc::new(FileReassembler::new(file_transfer_path.clone()));
+    let chunk_manager_task = tokio::spawn(
+        chunk::manager::ChunkManager::new(
+            sessions.clone(),
+            cache.clone(),
+            delivery_tracker.clone(),
+            reassembler.clone(),
+            trust_registry.clone(),
+            untrusted_buffer.clone(),
+            dispatcher,
+            shutdown_tx.subscribe(),
+        )
+        .run(),
+    );
 
-    // Trust registry and untrusted chunk buffer
-    let trust_registry = TrustRegistry::new();
-    trust_registry.apply_config(config.trust.auto_trust, &config.trust.trusted_peers);
-    if config.trust.auto_trust {
-        tracing::warn!("auto-trust enabled — all discovered peers will be trusted");
-    }
-    let untrusted_buffer = UntrustedBuffer::new();
+    let send_worker_task = tokio::spawn(
+        chunk::send_worker::SendWorker::new(
+            sessions.clone(),
+            cache.clone(),
+            trust_registry.clone(),
+            chunk_rx,
+            shutdown_tx.subscribe(),
+        )
+        .run(),
+    );
 
-    // Outbound chunk queue - HTTP endpoint pushes, send worker pulls.
-    // Created early so the compute service can send ACKs via chunk_tx.
-    let (chunk_tx, mut chunk_rx) = mpsc::unbounded_channel::<(SendTarget, chunk::OutgoingChunk)>();
-
-    // Service dispatcher — routes chunks to the appropriate service
-    let dispatcher = {
-        use dispatch::ServiceDispatcher;
-        use summit_services::{ChunkService, ComputeService, KnownSchema, MessagingService};
-        let mut d = ServiceDispatcher::new();
-        let reassembler_svc = reassembler.clone() as Arc<dyn ChunkService>;
-        // Register the primary service hash (used for activate/deactivate)
-        d.register(reassembler_svc.clone());
-        // Also register the actual schema IDs used on the wire so incoming
-        // file chunks are routed directly to the reassembler instead of
-        // falling through to the legacy chunk_tx channel.
-        d.register_schema(KnownSchema::FileData.id(), reassembler_svc.clone());
-        d.register_schema(KnownSchema::FileMetadata.id(), reassembler_svc);
-        let messaging = Arc::new(MessagingService::new(message_store.clone()));
-        d.register(messaging as Arc<dyn ChunkService>);
-        if config.services.compute {
-            let compute_svc = Arc::new(ComputeService::new(
-                compute_store.clone(),
-                config.services.compute_settings.clone(),
-                chunk_tx.clone(),
-            ));
-            d.register(compute_svc as Arc<dyn ChunkService>);
-        }
-        Arc::new(d)
-    };
-
-    // Spawn chunk send/receive tasks for each active session
-    let chunk_manager = {
-        let sessions = sessions.clone();
-        let cache = cache.clone();
-        let tracker = delivery_tracker.clone();
-        let reassembler_ref = reassembler.clone();
-        let trust_ref = trust_registry.clone();
-        let buffer_ref = untrusted_buffer.clone();
-        let dispatcher_ref = dispatcher.clone();
-
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(1));
-            let mut seen_sessions = std::collections::HashSet::new();
-
-            loop {
-                interval.tick().await;
-
-                for entry in sessions.iter() {
-                    let session_id = *entry.key();
-                    if seen_sessions.insert(session_id) {
-                        let active = entry.value();
-                        tracing::info!(
-                            session_id = hex::encode(session_id),
-                            "spawning chunk tasks for session"
-                        );
-
-                        let peer_addr = active.meta.peer_addr;
-                        let crypto = active.crypto.clone();
-                        let socket = active.socket.clone();
-                        let reassembler = reassembler_ref.clone();
-                        let peer_pubkey = active.meta.peer_pubkey;
-                        let trust = trust_ref.clone();
-                        let buffer = buffer_ref.clone();
-                        let dispatcher = dispatcher_ref.clone();
-
-                        // Create channel for received chunks
-                        let (chunk_tx, mut chunk_rx) =
-                            tokio::sync::mpsc::channel::<chunk::IncomingChunk>(100);
-
-                        // Spawn receiver handler (processes chunks, feeds reassembler)
-                        tokio::spawn(async move {
-                            while let Some(chunk) = chunk_rx.recv().await {
-                                // Check trust level BEFORE processing
-                                match trust.check(&peer_pubkey) {
-                                    TrustLevel::Blocked => {
-                                        tracing::debug!(
-                                            peer = hex::encode(peer_pubkey),
-                                            "chunk from blocked peer, dropping"
-                                        );
-                                        continue;
-                                    }
-                                    TrustLevel::Untrusted => {
-                                        tracing::info!(
-                                            peer = hex::encode(&peer_pubkey[..8]),
-                                            content_hash = hex::encode(&chunk.content_hash[..8]),
-                                            "chunk from untrusted peer, buffering"
-                                        );
-                                        buffer.add(peer_pubkey, chunk.content_hash, chunk.payload);
-                                        continue;
-                                    }
-                                    TrustLevel::Trusted => {
-                                        // Process normally - continue below
-                                    }
-                                }
-
-                                tracing::info!(
-                                    content_hash = hex::encode(chunk.content_hash),
-                                    type_tag = chunk.type_tag,
-                                    payload_len = chunk.payload.len(),
-                                    "chunk received"
-                                );
-
-                                // Handle file metadata chunks (type_tag 3)
-                                if chunk.type_tag == 3 {
-                                    if let Ok(metadata) =
-                                        serde_json::from_slice::<summit_services::FileMetadata>(
-                                            &chunk.payload,
-                                        )
-                                    {
-                                        tracing::info!(filename = %metadata.filename, chunks = metadata.chunk_hashes.len(), "file transfer started");
-                                        reassembler.add_metadata(metadata).await;
-                                    }
-                                }
-
-                                // Handle file data chunks (type_tag 2)
-                                if chunk.type_tag == 2 {
-                                    if let Ok(Some(path)) = reassembler
-                                        .add_chunk(chunk.content_hash, chunk.payload)
-                                        .await
-                                    {
-                                        tracing::info!(path = %path.display(), "file completed");
-                                    }
-                                }
-                            }
-                        });
-
-                        // Spawn receive loop
-                        let recv_socket = socket.clone();
-                        let recv_crypto = crypto.clone();
-                        let recv_cache = cache.clone();
-                        let recv_tracker = tracker.clone();
-                        let peer_addr_str = peer_addr.to_string();
-
-                        tokio::spawn(async move {
-                            if let Err(e) = chunk::receive::receive_loop(
-                                recv_socket,
-                                recv_crypto,
-                                chunk_tx,
-                                recv_cache,
-                                recv_tracker,
-                                peer_addr_str,
-                                dispatcher,
-                                peer_pubkey,
-                            )
-                            .await
-                            {
-                                tracing::warn!(error = %e, "receive loop terminated");
-                            }
-                        });
-                    }
-                }
-            }
-        })
-    };
-
-    // Send worker - pulls chunks from queue, applies QoS, sends to all sessions
-    let send_worker = {
-        let sessions = sessions.clone();
-        let cache = cache.clone();
-        let trust = trust_registry.clone();
-
-        tokio::spawn(async move {
-            while let Some((target, chunk)) = chunk_rx.recv().await {
-                // Determine which sessions to send to based on target
-                let target_sessions: Vec<[u8; 32]> = match &target {
-                    SendTarget::Broadcast => {
-                        // Collect session IDs of trusted peers
-                        sessions
-                            .iter()
-                            .filter(|e| {
-                                trust.check(&e.value().meta.peer_pubkey) == TrustLevel::Trusted
-                            })
-                            .map(|e| *e.key())
-                            .collect()
-                    }
-                    SendTarget::Peer { public_key } => {
-                        // Find session ID for this peer
-                        sessions
-                            .iter()
-                            .find(|e| e.value().meta.peer_pubkey == *public_key)
-                            .map(|e| vec![*e.key()])
-                            .unwrap_or_default()
-                    }
-                    SendTarget::Session { session_id } => {
-                        // Direct session send
-                        if sessions.contains_key(session_id) {
-                            vec![*session_id]
-                        } else {
-                            vec![]
-                        }
-                    }
-                };
-
-                if target_sessions.is_empty() {
-                    tracing::debug!(?target, "no target sessions found");
-                    continue;
-                }
-
-                // Priority check
-                let has_realtime = sessions
-                    .iter()
-                    .any(|e| matches!(e.value().meta.primary_contract(), Contract::Realtime));
-
-                let mut send_tasks = Vec::new();
-
-                for session_id in target_sessions {
-                    let session = match sessions.get(&session_id) {
-                        Some(s) => s,
-                        None => continue,
-                    };
-                    let peer_addr = session.meta.peer_addr;
-                    let chunk_port = session.meta.chunk_port;
-                    let socket = session.value().socket.clone();
-                    let crypto = session.value().crypto.clone();
-                    let contract = session.meta.primary_contract();
-
-                    // Drop Background if Realtime is active
-                    if has_realtime && matches!(contract, Contract::Background) {
-                        tracing::debug!(%peer_addr, "background chunk suppressed — realtime active");
-                        continue;
-                    }
-
-                    // Check token bucket
-                    let allowed = session.bucket.lock().await.allow();
-                    if !allowed {
-                        tracing::debug!(%peer_addr, ?contract, "chunk dropped — rate limited");
-                        continue;
-                    }
-
-                    // Construct chunk peer address
-                    let chunk_peer_addr = match peer_addr {
-                        std::net::SocketAddr::V6(mut addr) => {
-                            addr.set_port(chunk_port);
-                            std::net::SocketAddr::V6(addr)
-                        }
-                        _ => peer_addr,
-                    };
-
-                    let chunk_clone = chunk.clone();
-                    let cache_clone = cache.clone();
-
-                    let task = tokio::spawn(async move {
-                        chunk::send::send_chunk(
-                            socket,
-                            chunk_peer_addr,
-                            crypto,
-                            chunk_clone,
-                            cache_clone,
-                        )
-                        .await
-                    });
-                    send_tasks.push(task);
-                }
-
-                // Wait for all sends to complete
-                for task in send_tasks {
-                    let _ = task.await;
-                }
-            }
-        })
-    };
-
-    // Delivery stats printer - shows multipath deliveries every 10 seconds
     let stats_printer = {
         let tracker = delivery_tracker.clone();
         tokio::spawn(async move {
@@ -957,7 +280,7 @@ async fn main() -> Result<()> {
     };
 
     // Status HTTP endpoint
-    let status_port = 9001u16;
+    let status_port = config.network.api_port;
     let _status_server = {
         let mut enabled_services: Vec<String> = Vec::new();
         if config.services.file_transfer {
@@ -984,7 +307,7 @@ async fn main() -> Result<()> {
             message_store: message_store.clone(),
             compute_store: compute_store.clone(),
             keypair: keypair.clone(),
-            file_transfer_path: file_transfer_path.clone(),
+            file_transfer_path,
             enabled_services,
         };
         tokio::spawn(async move {
@@ -994,7 +317,7 @@ async fn main() -> Result<()> {
         })
     };
 
-    // Compute executor — picks up queued remote tasks and runs them
+    // Compute executor
     let _compute_executor = if config.services.compute {
         let store = compute_store.clone();
         let settings = config.services.compute_settings.clone();
@@ -1006,16 +329,21 @@ async fn main() -> Result<()> {
         None
     };
 
+    // ── Wait for exit ────────────────────────────────────────────────────────
+
+    let mut shutdown_rx = shutdown_tx.subscribe();
+
     tokio::select! {
-        r = broadcast_task      => tracing::error!("broadcast task exited: {:?}", r),
-        r = listener_task       => tracing::error!("listener task exited: {:?}", r),
-        r = expiry_task         => tracing::error!("expiry task exited: {:?}", r),
-        r = session_listener    => tracing::error!("session listener exited: {:?}", r),
-        r = session_initiator   => tracing::error!("session initiator exited: {:?}", r),
-        r = session_printer     => tracing::error!("session printer exited: {:?}", r),
-        r = chunk_manager       => tracing::error!("chunk manager exited: {:?}", r),
-        r = send_worker         => tracing::error!("send worker exited: {:?}", r),
-        r = stats_printer       => tracing::error!("stats printer exited: {:?}", r),
+        _ = shutdown_rx.recv()       => tracing::info!("shutting down"),
+        r = broadcast_task           => tracing::error!("broadcast task exited: {:?}", r),
+        r = listener_task            => tracing::error!("listener task exited: {:?}", r),
+        r = expiry_task              => tracing::error!("expiry task exited: {:?}", r),
+        r = session_listener_task    => tracing::error!("session listener exited: {:?}", r),
+        r = session_initiator_task   => tracing::error!("session initiator exited: {:?}", r),
+        r = session_printer          => tracing::error!("session printer exited: {:?}", r),
+        r = chunk_manager_task       => tracing::error!("chunk manager exited: {:?}", r),
+        r = send_worker_task         => tracing::error!("send worker exited: {:?}", r),
+        r = stats_printer            => tracing::error!("stats printer exited: {:?}", r),
     }
 
     Ok(())

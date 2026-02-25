@@ -176,9 +176,10 @@ impl HandshakeTracker {
         self.initiators_waiting.contains_key(peer_ip)
     }
 
-    /// Clean up stale handshakes (older than 10 seconds)
+    /// Clean up stale handshakes older than the configured timeout.
     pub fn cleanup_stale(&mut self) {
-        let cutoff = Instant::now() - std::time::Duration::from_secs(10);
+        let cutoff = Instant::now()
+            - std::time::Duration::from_secs(summit_core::wire::HANDSHAKE_TIMEOUT_SECS);
         self.initiators.retain(|_, state| state.started_at > cutoff);
         self.responders.retain(|_, state| state.started_at > cutoff);
     }

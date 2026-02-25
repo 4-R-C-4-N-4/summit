@@ -36,6 +36,8 @@ pub struct NetworkConfig {
     pub session_port: u16,
     /// UDP port for chunk data. 0 = use session_port.
     pub chunk_port: u16,
+    /// HTTP API port for status/control.
+    pub api_port: u16,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -117,6 +119,7 @@ impl Default for NetworkConfig {
             interface: String::new(),
             session_port: 0,
             chunk_port: 0,
+            api_port: 9001,
         }
     }
 }
@@ -147,7 +150,7 @@ impl Default for ServicesConfig {
 impl Default for FileTransferSettings {
     fn default() -> Self {
         Self {
-            storage_path: PathBuf::from("/tmp/summit-received"),
+            storage_path: data_dir().join("received"),
             cache_max_bytes: 1_073_741_824, // 1 GB
         }
     }
@@ -165,7 +168,7 @@ impl Default for MessagingSettings {
 impl Default for ComputeSettings {
     fn default() -> Self {
         Self {
-            work_dir: PathBuf::from("/tmp/summit-compute"),
+            work_dir: data_dir().join("compute"),
             max_concurrent_tasks: 0,
             max_cpu_cores: 0,
             max_memory_bytes: 0,
@@ -182,7 +185,7 @@ fn config_dir() -> PathBuf {
         .join("summit")
 }
 
-fn data_dir() -> PathBuf {
+pub fn data_dir() -> PathBuf {
     std::env::var("XDG_DATA_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| dirs_or_home().join(".local").join("share"))
