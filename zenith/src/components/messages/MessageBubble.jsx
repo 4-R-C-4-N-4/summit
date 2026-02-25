@@ -10,7 +10,7 @@ export default function MessageBubble({ message, isSent }) {
         `}
       >
         <div className="text-[11px] text-summit-cream break-words leading-relaxed">
-          {message.text}
+          {message.content?.text ?? message.text}
         </div>
         <div className="text-[8px] text-white/20 mt-1.5 tabular-nums">
           {message.timestamp

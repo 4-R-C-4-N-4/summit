@@ -3,10 +3,8 @@ import { shortKey } from '../../lib/format';
 import PulseDot from '../common/PulseDot';
 
 export default function ConversationList({ selected, onSelect }) {
-  const { peers, trust } = useDaemon();
-  const trustMap = {};
-  trust.forEach(t => { trustMap[t.public_key] = t.level; });
-  const trustedPeers = peers.filter(p => trustMap[p.public_key] === 'Trusted');
+  const { peers } = useDaemon();
+  const trustedPeers = peers.filter(p => p.trust_level === 'Trusted');
 
   return (
     <div className="w-56 border-r border-summit-border bg-summit-surface overflow-y-auto flex flex-col">

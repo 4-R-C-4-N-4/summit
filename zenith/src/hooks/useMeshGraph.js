@@ -2,12 +2,9 @@ import { useMemo } from 'react';
 import { useDaemon } from './useDaemon';
 
 export function useMeshGraph() {
-  const { status, peers, trust } = useDaemon();
+  const { status, peers } = useDaemon();
 
   return useMemo(() => {
-    const trustMap = {};
-    (trust || []).forEach(t => { trustMap[t.public_key] = t.level; });
-
     const selfKey = status?.public_key || 'self';
 
     const nodes = [
@@ -21,7 +18,7 @@ export function useMeshGraph() {
         id: peer.public_key,
         label: peer.public_key.slice(0, 8),
         type: 'peer',
-        trust: trustMap[peer.public_key] || 'Untrusted',
+        trust: peer.trust_level || 'Untrusted',
         active: peer.last_seen_secs < 5,
         addr: peer.addr,
       });
@@ -44,5 +41,5 @@ export function useMeshGraph() {
     });
 
     return { nodes, links };
-  }, [status, peers, trust]);
+  }, [status, peers]);
 }

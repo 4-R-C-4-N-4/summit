@@ -302,11 +302,25 @@ async fn main() -> Result<()> {
                             }
                             tracing::debug!(peer_addr = %peer_addr, "sent HandshakeResponse");
 
-                            // Look up peer's public key from registry_ref
-                            let peer_pubkey = registry_ref.iter()
-                            .find(|entry| entry.value().addr == peer_ip)
-                            .map(|entry| *entry.key())
-                            .unwrap_or([0u8; 32]);
+                            // Look up peer's public key from registry.
+                            // The initiator must already be in our registry
+                            // (we received their capability announcement) for
+                            // the session to be routable. If not found, reject
+                            // the handshake — it will be retried on the next
+                            // initiator tick once discovery catches up.
+                            let peer_pubkey = match registry_ref.iter()
+                                .find(|entry| entry.value().addr == peer_ip)
+                                .map(|entry| *entry.key())
+                            {
+                                Some(pk) => pk,
+                                None => {
+                                    tracing::warn!(
+                                        %peer_addr,
+                                        "HandshakeInit from peer not yet in registry, deferring"
+                                    );
+                                    continue;
+                                }
+                            };
 
                             tracker.lock().await.add_responder(peer_ip, peer_pubkey, pending, local_chunk_port, chunk_socket);
 

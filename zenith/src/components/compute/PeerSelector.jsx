@@ -4,13 +4,11 @@ import { shortKey } from '../../lib/format';
 import PulseDot from '../common/PulseDot';
 
 export default function PeerSelector({ value, onChange }) {
-  const { peers, trust } = useDaemon();
+  const { peers } = useDaemon();
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
 
-  const trustMap = {};
-  trust.forEach(t => { trustMap[t.public_key] = t.level; });
-  const trustedPeers = peers.filter(p => trustMap[p.public_key] === 'Trusted');
+  const trustedPeers = peers.filter(p => p.trust_level === 'Trusted');
   const selected = trustedPeers.find(p => p.public_key === value);
 
   useEffect(() => {

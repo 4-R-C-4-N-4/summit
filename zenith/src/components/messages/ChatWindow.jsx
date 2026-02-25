@@ -29,7 +29,7 @@ export default function ChatWindow({ peerKey }) {
 
   const handleSend = async (text) => {
     await sendMessage(peerKey, text);
-    setMessages(prev => [...prev, { from: 'you', text, timestamp: Date.now() }]);
+    setMessages(prev => [...prev, { from: 'self', content: { text }, timestamp: Date.now() }]);
   };
 
   if (!peerKey) {
@@ -61,7 +61,7 @@ export default function ChatWindow({ peerKey }) {
           </div>
         ) : (
           messages.map((msg, i) => (
-            <MessageBubble key={i} message={msg} isSent={msg.from === 'you'} />
+            <MessageBubble key={i} message={msg} isSent={msg.from !== peerKey} />
           ))
         )}
       </div>

@@ -3,11 +3,9 @@ import { useUIState } from '../../hooks/useUIState';
 import { shortKey } from '../../lib/format';
 
 export default function MessagesSummary() {
-  const { peers, trust } = useDaemon();
+  const { peers } = useDaemon();
   const { setActiveView } = useUIState();
-  const trustMap = {};
-  trust.forEach(t => { trustMap[t.public_key] = t.level; });
-  const trustedPeers = peers.filter(p => trustMap[p.public_key] === 'Trusted');
+  const trustedPeers = peers.filter(p => p.trust_level === 'Trusted');
 
   return (
     <button
