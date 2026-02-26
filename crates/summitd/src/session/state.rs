@@ -43,6 +43,7 @@ pub struct InitiatorWaiting {
     #[allow(dead_code)]
     pub chunk_socket_port: u16,
     pub peer_pubkey: [u8; 32],
+    pub started_at: Instant,
 }
 
 pub struct ResponderWaiting {
@@ -50,6 +51,7 @@ pub struct ResponderWaiting {
     pub chunk_socket: Arc<UdpSocket>,
     pub local_chunk_port: u16,
     pub peer_pubkey: [u8; 32],
+    pub started_at: Instant,
 }
 
 impl HandshakeTracker {
@@ -121,6 +123,7 @@ impl HandshakeTracker {
                 chunk_socket,
                 chunk_socket_port: chunk_port,
                 peer_pubkey,
+                started_at: Instant::now(),
             },
         );
     }
@@ -140,6 +143,7 @@ impl HandshakeTracker {
                 chunk_socket,
                 local_chunk_port,
                 peer_pubkey,
+                started_at: Instant::now(),
             },
         );
     }
@@ -182,5 +186,9 @@ impl HandshakeTracker {
             - std::time::Duration::from_secs(summit_core::wire::HANDSHAKE_TIMEOUT_SECS);
         self.initiators.retain(|_, state| state.started_at > cutoff);
         self.responders.retain(|_, state| state.started_at > cutoff);
+        self.initiators_waiting
+            .retain(|_, state| state.started_at > cutoff);
+        self.responders_waiting
+            .retain(|_, state| state.started_at > cutoff);
     }
 }

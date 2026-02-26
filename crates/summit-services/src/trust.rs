@@ -152,8 +152,14 @@ impl Clone for TrustRegistry {
     }
 }
 
-/// A buffered chunk: (content_hash, chunk_data).
-type BufferedChunk = ([u8; 32], Bytes);
+/// A buffered chunk with full header info needed for replay.
+#[derive(Debug, Clone)]
+pub struct BufferedChunk {
+    pub content_hash: [u8; 32],
+    pub type_tag: u16,
+    pub schema_id: [u8; 32],
+    pub payload: Bytes,
+}
 
 /// Buffer for chunks from untrusted peers.
 pub struct UntrustedBuffer {
@@ -174,16 +180,28 @@ impl UntrustedBuffer {
         }
     }
 
-    /// Add a chunk from an untrusted peer.
-    pub fn add(&self, peer_pubkey: [u8; 32], content_hash: [u8; 32], data: Bytes) {
+    /// Add a chunk from an untrusted peer (preserves full header for replay).
+    pub fn add(
+        &self,
+        peer_pubkey: [u8; 32],
+        content_hash: [u8; 32],
+        type_tag: u16,
+        schema_id: [u8; 32],
+        data: Bytes,
+    ) {
         self.buffer
             .entry(peer_pubkey)
             .or_default()
-            .push((content_hash, data));
+            .push(BufferedChunk {
+                content_hash,
+                type_tag,
+                schema_id,
+                payload: data,
+            });
     }
 
     /// Retrieve and remove all buffered chunks for a peer (when they become trusted).
-    pub fn flush(&self, peer_pubkey: &[u8; 32]) -> Vec<([u8; 32], Bytes)> {
+    pub fn flush(&self, peer_pubkey: &[u8; 32]) -> Vec<BufferedChunk> {
         self.buffer
             .remove(peer_pubkey)
             .map(|(_, chunks)| chunks)
@@ -282,13 +300,13 @@ mod tests {
         let peer = [1u8; 32];
         let hash = [2u8; 32];
 
-        buf.add(peer, hash, Bytes::from_static(b"data"));
+        buf.add(peer, hash, 2, [0u8; 32], Bytes::from_static(b"data"));
         assert_eq!(buf.count(&peer), 1);
 
         let flushed = buf.flush(&peer);
         assert_eq!(flushed.len(), 1);
-        assert_eq!(flushed[0].0, hash);
-        assert_eq!(flushed[0].1, Bytes::from_static(b"data"));
+        assert_eq!(flushed[0].content_hash, hash);
+        assert_eq!(flushed[0].payload, Bytes::from_static(b"data"));
 
         // After flush, count should be 0
         assert_eq!(buf.count(&peer), 0);
@@ -300,9 +318,9 @@ mod tests {
         let peer_a = [1u8; 32];
         let peer_b = [2u8; 32];
 
-        buf.add(peer_a, [10u8; 32], Bytes::from_static(b"a1"));
-        buf.add(peer_a, [11u8; 32], Bytes::from_static(b"a2"));
-        buf.add(peer_b, [20u8; 32], Bytes::from_static(b"b1"));
+        buf.add(peer_a, [10u8; 32], 2, [0u8; 32], Bytes::from_static(b"a1"));
+        buf.add(peer_a, [11u8; 32], 2, [0u8; 32], Bytes::from_static(b"a2"));
+        buf.add(peer_b, [20u8; 32], 2, [0u8; 32], Bytes::from_static(b"b1"));
 
         assert_eq!(buf.total(), 3);
 
@@ -315,7 +333,7 @@ mod tests {
         let buf = UntrustedBuffer::new();
         let peer = [1u8; 32];
 
-        buf.add(peer, [10u8; 32], Bytes::from_static(b"data"));
+        buf.add(peer, [10u8; 32], 2, [0u8; 32], Bytes::from_static(b"data"));
         assert_eq!(buf.count(&peer), 1);
 
         buf.clear(&peer);

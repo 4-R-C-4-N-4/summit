@@ -50,7 +50,7 @@ impl ChunkManager {
 
     pub async fn run(mut self) -> anyhow::Result<()> {
         let mut interval = tokio::time::interval(Duration::from_secs(1));
-        let mut seen_sessions = HashSet::new();
+        let seen_sessions = Arc::new(tokio::sync::Mutex::new(HashSet::new()));
 
         loop {
             tokio::select! {
@@ -60,16 +60,17 @@ impl ChunkManager {
                 }
 
                 _ = interval.tick() => {
-                    self.spawn_new_sessions(&mut seen_sessions);
+                    self.spawn_new_sessions(&seen_sessions).await;
                 }
             }
         }
     }
 
-    fn spawn_new_sessions(&self, seen_sessions: &mut HashSet<[u8; 32]>) {
+    async fn spawn_new_sessions(&self, seen_sessions: &Arc<tokio::sync::Mutex<HashSet<[u8; 32]>>>) {
+        let mut seen = seen_sessions.lock().await;
         for entry in self.sessions.iter() {
             let session_id = *entry.key();
-            if !seen_sessions.insert(session_id) {
+            if !seen.insert(session_id) {
                 continue;
             }
 
@@ -111,7 +112,13 @@ impl ChunkManager {
                                 content_hash = hex::encode(&chunk.content_hash[..8]),
                                 "chunk from untrusted peer, buffering"
                             );
-                            buffer.add(peer_pubkey, chunk.content_hash, chunk.payload);
+                            buffer.add(
+                                peer_pubkey,
+                                chunk.content_hash,
+                                chunk.type_tag,
+                                chunk.schema_id,
+                                chunk.payload,
+                            );
                             continue;
                         }
                         TrustLevel::Trusted => {
@@ -148,8 +155,10 @@ impl ChunkManager {
                 }
             });
 
-            // Spawn receive loop
+            // Spawn receive loop — removes session from table on exit
             let peer_addr_str = peer_addr.to_string();
+            let session_table = self.sessions.clone();
+            let seen = seen_sessions.clone();
             tokio::spawn(async move {
                 if let Err(e) = super::receive::receive_loop(
                     socket,
@@ -165,6 +174,14 @@ impl ChunkManager {
                 {
                     tracing::warn!(error = %e, "receive loop terminated");
                 }
+                // Prune the dead session so the initiator can reconnect
+                if session_table.remove(&session_id).is_some() {
+                    tracing::info!(
+                        session_id = hex::encode(session_id),
+                        "pruned dead session from table"
+                    );
+                }
+                seen.lock().await.remove(&session_id);
             });
         }
     }

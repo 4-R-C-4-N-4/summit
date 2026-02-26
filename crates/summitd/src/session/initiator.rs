@@ -3,7 +3,6 @@
 //! Periodically scans the peer registry and initiates Noise_XX
 //! handshakes with discovered peers (on a 3-second interval).
 
-use std::collections::HashSet;
 use std::net::{SocketAddr, SocketAddrV6};
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,7 +13,7 @@ use zerocopy::AsBytes;
 
 use summit_core::crypto::{Keypair, NoiseInitiator};
 use summit_core::wire::HandshakeInit;
-use summit_services::PeerRegistry;
+use summit_services::{PeerRegistry, SessionTable};
 
 use super::state::SharedTracker;
 
@@ -23,6 +22,7 @@ pub struct SessionInitiator {
     keypair: Arc<Keypair>,
     registry: PeerRegistry,
     tracker: SharedTracker,
+    sessions: SessionTable,
     interface_index: u32,
     shutdown: broadcast::Receiver<()>,
 }
@@ -33,6 +33,7 @@ impl SessionInitiator {
         keypair: Arc<Keypair>,
         registry: PeerRegistry,
         tracker: SharedTracker,
+        sessions: SessionTable,
         interface_index: u32,
         shutdown: broadcast::Receiver<()>,
     ) -> Self {
@@ -41,6 +42,7 @@ impl SessionInitiator {
             keypair,
             registry,
             tracker,
+            sessions,
             interface_index,
             shutdown,
         }
@@ -48,7 +50,6 @@ impl SessionInitiator {
 
     pub async fn run(mut self) -> anyhow::Result<()> {
         let mut interval = tokio::time::interval(Duration::from_secs(3));
-        let mut attempted = HashSet::new();
 
         loop {
             tokio::select! {
@@ -59,19 +60,36 @@ impl SessionInitiator {
 
                 _ = interval.tick() => {
                     tracing::debug!(peers = self.registry.len(), "initiator tick");
-                    self.initiate_handshakes(&mut attempted).await;
+                    self.initiate_handshakes().await;
                 }
             }
         }
     }
 
-    async fn initiate_handshakes(&self, attempted: &mut HashSet<[u8; 32]>) {
+    async fn initiate_handshakes(&self) {
+        // Collect pubkeys that already have an active session
+        let active_pubkeys: std::collections::HashSet<[u8; 32]> = self
+            .sessions
+            .iter()
+            .map(|entry| entry.value().meta.peer_pubkey)
+            .collect();
+
         for peer in self.registry.iter() {
             let peer_pubkey: [u8; 32] = *peer.key();
             let entry = peer.value();
 
-            if attempted.contains(&peer_pubkey) {
+            // Skip if we already have an active session with this peer
+            if active_pubkeys.contains(&peer_pubkey) {
                 continue;
+            }
+
+            // Skip if a handshake is already in progress for this peer's IP
+            {
+                let tracker = self.tracker.lock().await;
+                if tracker.has_initiator(&entry.addr) || tracker.has_initiator_waiting(&entry.addr)
+                {
+                    continue;
+                }
             }
 
             // Only initiate if our public key is lower than peer's
@@ -88,8 +106,6 @@ impl SessionInitiator {
                 peer_key = hex::encode(&entry.public_key[..4]),
                 "we have lower key, initiating"
             );
-
-            attempted.insert(peer_pubkey);
 
             let peer_addr = SocketAddr::V6(SocketAddrV6::new(
                 entry.addr,

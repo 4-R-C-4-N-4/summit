@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use bytes::Bytes;
@@ -9,6 +10,9 @@ use zerocopy::FromBytes;
 use summit_core::crypto::{hash, Session};
 use summit_core::wire::ChunkHeader;
 use summit_services::{ChunkCache, KnownSchema};
+
+/// How long to wait for data before considering the session dead.
+const RECEIVE_TIMEOUT: Duration = Duration::from_secs(60);
 
 use super::IncomingChunk;
 
@@ -28,10 +32,14 @@ pub async fn receive_loop(
     let mut buf = vec![0u8; 65536 + 1024];
 
     loop {
-        let (len, _peer) = socket
-            .recv_from(&mut buf)
-            .await
-            .context("recv_from failed")?;
+        let (len, _peer) =
+            match tokio::time::timeout(RECEIVE_TIMEOUT, socket.recv_from(&mut buf)).await {
+                Ok(result) => result.context("recv_from failed")?,
+                Err(_) => bail!(
+                    "receive timeout — no data for {}s, session presumed dead",
+                    RECEIVE_TIMEOUT.as_secs()
+                ),
+            };
 
         let mut plaintext = Vec::new();
         {

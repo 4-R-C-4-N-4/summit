@@ -13,8 +13,8 @@ use axum::http::StatusCode;
 
 use summit_core::crypto::Keypair;
 use summit_services::{
-    ChunkCache, ComputeStore, MessageStore, OutgoingChunk, PeerRegistry, SendTarget, SessionTable,
-    TrustRegistry, UntrustedBuffer,
+    BufferedChunk, ChunkCache, ComputeStore, MessageStore, OutgoingChunk, PeerRegistry, SendTarget,
+    SessionTable, TrustRegistry, UntrustedBuffer,
 };
 
 #[derive(Clone)]
@@ -33,6 +33,8 @@ pub struct ApiState {
     pub file_transfer_path: std::path::PathBuf,
     /// Names of services enabled in the current config, e.g. "messaging", "compute".
     pub enabled_services: Vec<String>,
+    /// Channel to replay buffered chunks when a peer becomes trusted.
+    pub replay_tx: tokio::sync::mpsc::UnboundedSender<([u8; 32], BufferedChunk)>,
 }
 
 // ── Shared helpers ────────────────────────────────────────────────────────────

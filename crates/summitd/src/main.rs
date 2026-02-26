@@ -217,6 +217,7 @@ async fn main() -> Result<()> {
             keypair.clone(),
             registry.clone(),
             handshake_tracker,
+            sessions.clone(),
             interface_index,
             shutdown_tx.subscribe(),
         )
@@ -251,7 +252,7 @@ async fn main() -> Result<()> {
             reassembler.clone(),
             trust_registry.clone(),
             untrusted_buffer.clone(),
-            dispatcher,
+            dispatcher.clone(),
             shutdown_tx.subscribe(),
         )
         .run(),
@@ -296,6 +297,10 @@ async fn main() -> Result<()> {
             enabled_services.push("compute".to_string());
         }
 
+        // Channel for replaying buffered chunks when a peer becomes trusted
+        let (replay_tx, mut replay_rx) =
+            tokio::sync::mpsc::unbounded_channel::<([u8; 32], summit_services::BufferedChunk)>();
+
         let state = summit_api::ApiState {
             sessions: sessions.clone(),
             cache: cache.clone(),
@@ -309,10 +314,55 @@ async fn main() -> Result<()> {
             keypair: keypair.clone(),
             file_transfer_path,
             enabled_services,
+            replay_tx,
         };
         tokio::spawn(async move {
             if let Err(e) = summit_api::serve(state, status_port).await {
                 tracing::error!(error = %e, "status server failed");
+            }
+        });
+
+        // Replay task: dispatches buffered chunks from newly-trusted peers
+        let replay_dispatcher = dispatcher.clone();
+        let replay_reassembler = reassembler.clone();
+        tokio::spawn(async move {
+            while let Some((peer_pubkey, chunk)) = replay_rx.recv().await {
+                tracing::info!(
+                    peer = hex::encode(&peer_pubkey[..8]),
+                    content_hash = hex::encode(&chunk.content_hash[..8]),
+                    type_tag = chunk.type_tag,
+                    "replaying buffered chunk from newly-trusted peer"
+                );
+
+                // Handle file metadata chunks (type_tag 3)
+                if chunk.type_tag == 3 {
+                    if let Ok(metadata) =
+                        serde_json::from_slice::<summit_services::FileMetadata>(&chunk.payload)
+                    {
+                        replay_reassembler.add_metadata(metadata).await;
+                    }
+                }
+
+                // Handle file data chunks (type_tag 2)
+                if chunk.type_tag == 2 {
+                    if let Ok(Some(path)) = replay_reassembler
+                        .add_chunk(chunk.content_hash, chunk.payload.clone())
+                        .await
+                    {
+                        tracing::info!(path = %path.display(), "file completed from replay");
+                    }
+                }
+
+                // Dispatch to service dispatcher for all other services
+                let header = summit_core::wire::ChunkHeader {
+                    content_hash: chunk.content_hash,
+                    schema_id: chunk.schema_id,
+                    type_tag: chunk.type_tag,
+                    length: chunk.payload.len() as u32,
+                    flags: 0,
+                    version: 1,
+                };
+                replay_dispatcher.dispatch(&peer_pubkey, &header, &chunk.payload);
             }
         })
     };

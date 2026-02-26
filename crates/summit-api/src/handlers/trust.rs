@@ -58,6 +58,13 @@ pub async fn handle_trust_add(
     let buffered = state.untrusted_buffer.flush(&pubkey);
     let flushed_chunks = buffered.len();
 
+    // Replay buffered chunks through the service dispatcher
+    for chunk in buffered {
+        if let Err(e) = state.replay_tx.send((pubkey, chunk)) {
+            tracing::warn!(error = %e, "failed to send buffered chunk for replay");
+        }
+    }
+
     Ok(Json(TrustAddResponse {
         public_key: req.public_key,
         flushed_chunks,

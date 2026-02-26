@@ -29,4 +29,4 @@ pub use schema::KnownSchema;
 pub use send_target::SendTarget;
 pub use service::ChunkService;
 pub use session::{new_session_table, ActiveSession, ServiceOnSession, SessionMeta, SessionTable};
-pub use trust::{TrustLevel, TrustRegistry, UntrustedBuffer};
+pub use trust::{BufferedChunk, TrustLevel, TrustRegistry, UntrustedBuffer};

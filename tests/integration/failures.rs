@@ -6,8 +6,7 @@ use crate::*;
 // ══════════════════════════════════════════════════════════════════════════════
 
 /// Bring link down after session establishes, wait, bring it back up.
-/// Documents the `attempted` set bug: the initiator won't retry handshake
-/// for the same pubkey, so the session may not re-establish after recovery.
+/// After the link recovers, the initiator should retry and re-establish a session.
 #[test]
 fn test_link_down_and_recovery() {
     if !skip_unless_ready() {
@@ -34,22 +33,17 @@ fn test_link_down_and_recovery() {
         assert!(daemon_alive(NS_A), "A died with link down");
         assert!(daemon_alive(NS_B), "B died with link down");
 
-        // Bring link back up (guard drops, but let's be explicit)
+        // Bring link back up
         drop(_guard);
-        thread::sleep(Duration::from_secs(10));
 
         // Both daemons should still be alive
         assert!(daemon_alive(NS_A), "A died after link recovery");
         assert!(daemon_alive(NS_B), "B died after link recovery");
 
-        // NOTE: Session may or may not re-establish due to the `attempted` set bug.
-        // The initiator remembers it already tried this pubkey and won't retry.
-        // We document current behavior rather than asserting ideal behavior.
-        let sessions = session_count(NS_A);
-        println!(
-            "Sessions after recovery: {} (may be 0 due to attempted-set bug)",
-            sessions
-        );
+        // Session should re-establish after link recovery.
+        // The initiator should detect the stale handshake/session and retry.
+        wait_for_condition(60, || session_count(NS_A) > 0)?;
+        println!("Session re-established after link recovery");
 
         Ok(())
     })();
@@ -161,10 +155,10 @@ fn test_node_restart_mid_session() {
     result.unwrap();
 }
 
-/// Establish session, kill B (don't restart). A's session table should still
-/// show the dead session — documenting the "sessions never pruned" gap.
+/// Establish session, kill B (don't restart). A should prune the dead session
+/// after the receive timeout fires and the session is removed from the table.
 #[test]
-fn test_dead_session_persists() {
+fn test_dead_session_pruned() {
     if !skip_unless_ready() {
         return;
     }
@@ -185,27 +179,15 @@ fn test_dead_session_persists() {
 
         // Kill B, don't restart
         node_b.kill().ok();
-        thread::sleep(Duration::from_secs(10));
 
         // A should stay alive and responsive
         assert!(daemon_alive(NS_A), "A died after B was killed");
 
-        // Document: dead session still in A's table (sessions never pruned)
-        let sessions_after = session_count(NS_A);
-        println!(
-            "Sessions after kill (no restart): {} — dead session {}pruned",
-            sessions_after,
-            if sessions_after < sessions_before {
-                ""
-            } else {
-                "NOT "
-            }
-        );
-        // Current behavior: session persists (documenting the leak)
-        assert!(
-            sessions_after >= 1,
-            "expected dead session to persist (known gap: sessions never pruned)"
-        );
+        // Dead session should be pruned after receive timeout (60s) + some margin
+        wait_for_condition(90, || session_count(NS_A) == 0)?;
+        println!("Dead session pruned from table");
+
+        assert!(daemon_alive(NS_A), "A died after session pruning");
 
         Ok(())
     })();
@@ -358,17 +340,10 @@ fn test_sender_killed_mid_transfer() {
 
         // Partial file should NOT be committed to disk
         let received_path = "/tmp/summit-received/summit-test-large-sender-kill.bin";
-        if std::path::Path::new(received_path).exists() {
-            let received = std::fs::read(received_path).unwrap_or_default();
-            // If file exists, it should be incomplete (documenting partial transfer behavior)
-            println!(
-                "Partial file exists: {} bytes (expected {} or 0)",
-                received.len(),
-                data.len()
-            );
-        } else {
-            println!("No partial file on disk (correct behavior)");
-        }
+        assert!(
+            !std::path::Path::new(received_path).exists(),
+            "partial file should not be committed when sender is killed mid-transfer"
+        );
 
         Ok(())
     })();
@@ -648,17 +623,12 @@ fn test_block_during_file_transfer() {
         // B should be alive
         assert!(daemon_alive(NS_B), "B died after blocking mid-transfer");
 
-        // File should NOT have been committed (blocked sender)
+        // File should NOT have been committed (blocked sender's chunks are dropped)
         let received_path = "/tmp/summit-received/summit-test-block-transfer.bin";
-        if std::path::Path::new(received_path).exists() {
-            let received = std::fs::read(received_path).unwrap_or_default();
-            println!(
-                "File exists ({} bytes) — block may not have taken effect in time",
-                received.len()
-            );
-        } else {
-            println!("File not committed (correct: sender was blocked)");
-        }
+        assert!(
+            !std::path::Path::new(received_path).exists(),
+            "file should not be committed after sender is blocked"
+        );
 
         Ok(())
     })();
@@ -671,7 +641,7 @@ fn test_block_during_file_transfer() {
 }
 
 /// B sends messages while untrusted by A. Trust B on A.
-/// Check whether buffered messages appear (documents the flush gap).
+/// Buffered messages should be replayed and appear on A after trust is granted.
 #[test]
 fn test_trust_then_check_buffered_messages() {
     if !skip_unless_ready() {
@@ -708,38 +678,35 @@ fn test_trust_then_check_buffered_messages() {
 
         thread::sleep(Duration::from_secs(4));
 
-        // A should have buffered chunks
+        // A should have buffered chunks from B
         let pending = api_get(NS_A, "/trust/pending")?;
         let empty = vec![];
         let pending_peers = pending["peers"].as_array().unwrap_or(&empty);
-        println!("Pending peers before trust: {}", pending_peers.len());
+        assert!(
+            !pending_peers.is_empty(),
+            "expected buffered chunks from untrusted B"
+        );
 
-        // Now trust B
+        // Now trust B — this should flush and replay the buffered chunks
         let flushed = trust_peer(NS_A, &pubkey_b)?;
         println!("Trusted B, flushed {} chunks", flushed);
+        assert!(
+            flushed >= 3,
+            "expected >= 3 flushed chunks, got {}",
+            flushed
+        );
 
         thread::sleep(Duration::from_secs(4));
 
-        // Check if buffered messages were delivered
-        // NOTE: This documents the flush gap — untrusted buffer flush may not
-        // be wired up, so messages may be lost.
-        let msgs = api_get(NS_A, &format!("/messages/{}", pubkey_b));
-        match msgs {
-            Ok(resp) => {
-                let msg_list = resp["messages"].as_array();
-                let count = msg_list.map(|a| a.len()).unwrap_or(0);
-                println!(
-                    "Messages from B after trust: {} (expected 3, may be 0 if flush gap exists)",
-                    count
-                );
-            }
-            Err(e) => {
-                println!(
-                    "Could not fetch messages after trust: {} (may indicate flush gap)",
-                    e
-                );
-            }
-        }
+        // Buffered messages should now be delivered via the replay channel
+        let msgs = api_get(NS_A, &format!("/messages/{}", pubkey_b))?;
+        let msg_list = msgs["messages"].as_array().context("no messages array")?;
+        println!("Messages from B after trust: {}", msg_list.len());
+        assert!(
+            msg_list.len() >= 3,
+            "expected >= 3 replayed messages, got {}",
+            msg_list.len()
+        );
 
         // Both alive
         assert!(daemon_alive(NS_A), "A died");
