@@ -125,7 +125,10 @@ fn test_nack_recovers_after_temporary_blackout() {
         let received_path = "/tmp/summit-received/summit-test-nack-blackout.txt";
         if std::path::Path::new(received_path).exists() {
             let received = std::fs::read_to_string(received_path)?;
-            assert_eq!(received, test_content, "content mismatch after blackout recovery");
+            assert_eq!(
+                received, test_content,
+                "content mismatch after blackout recovery"
+            );
             println!("File recovered after temporary blackout");
         } else {
             // Small file may have actually gotten through, or metadata was lost
@@ -336,7 +339,10 @@ fn test_nack_sender_gone_assembly_abandoned() {
         thread::sleep(Duration::from_secs(20));
 
         // Receiver must survive the failed recovery
-        assert!(daemon_alive(NS_B), "receiver died during failed NACK recovery");
+        assert!(
+            daemon_alive(NS_B),
+            "receiver died during failed NACK recovery"
+        );
 
         // File should NOT be committed (sender is dead, recovery fails)
         let received_path = "/tmp/summit-received/summit-test-nack-abandoned.bin";
@@ -347,7 +353,10 @@ fn test_nack_sender_gone_assembly_abandoned() {
 
         // Assembly should be abandoned (cleared from in_progress)
         let files = api_get(NS_B, "/files")?;
-        let in_progress = files["in_progress"].as_array().map(|a| a.len()).unwrap_or(0);
+        let in_progress = files["in_progress"]
+            .as_array()
+            .map(|a| a.len())
+            .unwrap_or(0);
         println!("in_progress after exhausted NACKs: {}", in_progress);
         // After MAX_NACK_ATTEMPTS, cleanup_stale or abandon should clear it.
         // It may still be in_progress if the stale timeout (300s) hasn't fired yet,
@@ -400,7 +409,12 @@ fn test_nack_concurrent_file_recovery() {
         // Send all files rapidly
         for (path, _) in &test_files {
             let send_out = ctl(NS_A, &["send", path])?;
-            assert!(send_out.contains("File queued"), "send {}: {}", path, send_out);
+            assert!(
+                send_out.contains("File queued"),
+                "send {}: {}",
+                path,
+                send_out
+            );
         }
         println!("All 5 files queued under 25% loss");
 
@@ -420,7 +434,12 @@ fn test_nack_concurrent_file_recovery() {
                 .unwrap();
             let received_path = format!("/tmp/summit-received/{}", filename);
             if let Ok(received) = std::fs::read(&received_path) {
-                assert_eq!(received.len(), expected.len(), "size mismatch for {}", filename);
+                assert_eq!(
+                    received.len(),
+                    expected.len(),
+                    "size mismatch for {}",
+                    filename
+                );
                 assert_eq!(&received, expected, "content mismatch for {}", filename);
                 recovered_count += 1;
             }
@@ -545,13 +564,17 @@ fn test_nack_loop_no_interference_clean_transfer() {
         assert!(daemon_alive(NS_B), "B died");
 
         let received_path = "/tmp/summit-received/summit-test-nack-clean.bin";
-        let received = std::fs::read(received_path).context("file not received on clean network")?;
+        let received =
+            std::fs::read(received_path).context("file not received on clean network")?;
         assert_eq!(received.len(), data.len(), "size mismatch");
         assert_eq!(received, data, "content mismatch on clean transfer");
 
         // Verify no in-progress assemblies remain
         let files = api_get(NS_B, "/files")?;
-        let in_progress = files["in_progress"].as_array().map(|a| a.len()).unwrap_or(0);
+        let in_progress = files["in_progress"]
+            .as_array()
+            .map(|a| a.len())
+            .unwrap_or(0);
         assert_eq!(
             in_progress, 0,
             "in_progress should be 0 after clean transfer, got {}",
