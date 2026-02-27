@@ -184,6 +184,7 @@ async fn handle_recovery(
 
             let mut gone_hashes = Vec::new();
 
+            let mut retransmitted = 0u32;
             for content_hash in &nack.missing {
                 match cache.get(content_hash) {
                     Ok(Some(data)) => {
@@ -199,6 +200,13 @@ async fn handle_recovery(
                         if let Err(e) = chunk_tx.send((target, chunk)).await {
                             tracing::warn!(error = %e, "failed to enqueue retransmit");
                             return;
+                        }
+                        retransmitted += 1;
+                        // Pace retransmissions to avoid exhausting the token bucket.
+                        // Bulk rate is 64 tokens/sec with burst of 32 — without pacing,
+                        // the burst is consumed instantly and the rest are dropped.
+                        if retransmitted % 16 == 0 {
+                            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
                         }
                     }
                     Ok(None) => {
