@@ -14,6 +14,7 @@ pub enum KnownSchema {
     FileData,
     FileMetadata,
     ComputeTask,
+    Recovery,
 }
 
 impl KnownSchema {
@@ -24,6 +25,7 @@ impl KnownSchema {
         let file_metadata_id = summit_core::crypto::hash(b"summit.file.metadata");
         let message_id = summit_core::crypto::hash(b"summit.message");
         let compute_id = summit_core::wire::compute_hash();
+        let recovery_id = summit_core::wire::recovery_hash();
 
         if schema_id == &test_ping_id {
             Some(Self::TestPing)
@@ -37,6 +39,8 @@ impl KnownSchema {
             Some(Self::Message)
         } else if schema_id == &compute_id {
             Some(Self::ComputeTask)
+        } else if schema_id == &recovery_id {
+            Some(Self::Recovery)
         } else {
             None
         }
@@ -68,6 +72,7 @@ impl KnownSchema {
                     .context("invalid compute envelope JSON")?;
                 Ok(())
             }
+            Self::Recovery => Ok(()), // Validated by the handler
         }
     }
 
@@ -80,6 +85,7 @@ impl KnownSchema {
             Self::FileMetadata => summit_core::crypto::hash(b"summit.file.metadata"),
             Self::Message => summit_core::crypto::hash(b"summit.message"),
             Self::ComputeTask => summit_core::wire::compute_hash(),
+            Self::Recovery => summit_core::wire::recovery_hash(),
         }
     }
 
@@ -92,6 +98,7 @@ impl KnownSchema {
             Self::FileMetadata => "summit.file.metadata",
             Self::Message => "summit.message",
             Self::ComputeTask => "summit.compute",
+            Self::Recovery => "summit.recovery",
         }
     }
 
@@ -103,6 +110,7 @@ impl KnownSchema {
             Self::FileChunk | Self::FileData => None,
             Self::Message => None,
             Self::ComputeTask => None,
+            Self::Recovery => None,
         }
     }
 }

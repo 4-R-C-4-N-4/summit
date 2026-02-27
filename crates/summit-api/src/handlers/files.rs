@@ -81,14 +81,19 @@ pub async fn handle_send(
     let bytes = file_data.len() as u64;
     let chunks_sent = chunks.len();
 
-    // Push all chunks to send queue with target
+    // Push all chunks to send queue with target, pacing to avoid overwhelming slow receivers
     for chunk in chunks {
-        state.chunk_tx.send((target.clone(), chunk)).map_err(|_| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "send queue closed".to_string(),
-            )
-        })?;
+        state
+            .chunk_tx
+            .send((target.clone(), chunk))
+            .await
+            .map_err(|_| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "send queue closed".to_string(),
+                )
+            })?;
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
     }
 
     tracing::info!(

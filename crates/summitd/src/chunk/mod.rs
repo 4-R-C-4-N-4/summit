@@ -6,6 +6,7 @@
 
 pub mod manager;
 pub mod receive;
+pub mod recovery;
 pub mod send;
 pub mod send_worker;
 

@@ -93,7 +93,7 @@ async fn main() -> Result<()> {
     let untrusted_buffer = UntrustedBuffer::new();
 
     // Outbound chunk queue
-    let (chunk_tx, chunk_rx) = mpsc::unbounded_channel::<(SendTarget, chunk::OutgoingChunk)>();
+    let (chunk_tx, chunk_rx) = mpsc::channel::<(SendTarget, chunk::OutgoingChunk)>(256);
 
     // File reassembler
     let file_transfer_path = config.services.file_transfer_settings.storage_path.clone();
@@ -253,6 +253,7 @@ async fn main() -> Result<()> {
             trust_registry.clone(),
             untrusted_buffer.clone(),
             dispatcher.clone(),
+            chunk_tx.clone(),
             shutdown_tx.subscribe(),
         )
         .run(),
@@ -268,6 +269,12 @@ async fn main() -> Result<()> {
         )
         .run(),
     );
+
+    let recovery_task = tokio::spawn(chunk::recovery::recovery_loop(
+        reassembler.clone(),
+        chunk_tx.clone(),
+        shutdown_tx.subscribe(),
+    ));
 
     let stats_printer = {
         let tracker = delivery_tracker.clone();
@@ -339,7 +346,7 @@ async fn main() -> Result<()> {
                     if let Ok(metadata) =
                         serde_json::from_slice::<summit_services::FileMetadata>(&chunk.payload)
                     {
-                        replay_reassembler.add_metadata(metadata).await;
+                        replay_reassembler.add_metadata(metadata, peer_pubkey).await;
                     }
                 }
 
@@ -393,6 +400,7 @@ async fn main() -> Result<()> {
         r = session_printer          => tracing::error!("session printer exited: {:?}", r),
         r = chunk_manager_task       => tracing::error!("chunk manager exited: {:?}", r),
         r = send_worker_task         => tracing::error!("send worker exited: {:?}", r),
+        r = recovery_task            => tracing::error!("recovery task exited: {:?}", r),
         r = stats_printer            => tracing::error!("stats printer exited: {:?}", r),
     }
 

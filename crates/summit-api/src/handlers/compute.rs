@@ -47,6 +47,7 @@ pub struct ComputeTaskJson {
     pub result: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub elapsed_ms: Option<u64>,
+    pub payload: serde_json::Value,
 }
 
 pub async fn handle_compute_tasks(
@@ -126,7 +127,7 @@ pub async fn handle_compute_submit(
     };
 
     let target = SendTarget::Peer { public_key: to };
-    state.chunk_tx.send((target, chunk)).map_err(|_| {
+    state.chunk_tx.send((target, chunk)).await.map_err(|_| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             "send queue closed".to_string(),
@@ -158,5 +159,6 @@ fn task_to_json(t: summit_services::ComputeTask) -> ComputeTaskJson {
         updated_at: t.updated_at,
         result,
         elapsed_ms,
+        payload: t.submit.payload.clone(),
     }
 }

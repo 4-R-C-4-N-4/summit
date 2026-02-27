@@ -56,10 +56,20 @@ export default function TaskDetail({ task }) {
 
       {task.payload && (
         <div className="flex flex-col gap-1.5">
-          <span className="text-[9px] text-white/25 tracking-wider uppercase">Payload</span>
-          <pre className="bg-summit-bg border border-summit-border rounded-lg p-3 text-[10px] text-white/50 overflow-auto max-h-40">
-            {JSON.stringify(task.payload, null, 2)}
-          </pre>
+          <span className="text-[9px] text-white/25 tracking-wider uppercase">Command</span>
+          {task.payload.run ? (
+            <pre className="bg-summit-bg border border-summit-border rounded-lg p-3 text-[10px] text-summit-cream font-mono overflow-auto max-h-40">
+              {task.payload.run}
+            </pre>
+          ) : task.payload.cmd ? (
+            <pre className="bg-summit-bg border border-summit-border rounded-lg p-3 text-[10px] text-summit-cream font-mono overflow-auto max-h-40">
+              {[task.payload.cmd, ...(task.payload.args || [])].join(' ')}
+            </pre>
+          ) : (
+            <pre className="bg-summit-bg border border-summit-border rounded-lg p-3 text-[10px] text-white/50 overflow-auto max-h-40">
+              {JSON.stringify(task.payload, null, 2)}
+            </pre>
+          )}
         </div>
       )}
 

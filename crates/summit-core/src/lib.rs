@@ -4,4 +4,5 @@
 
 pub mod config;
 pub mod crypto;
+pub mod recovery;
 pub mod wire;

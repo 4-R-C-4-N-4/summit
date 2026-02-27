@@ -8,8 +8,9 @@ use tokio::sync::{mpsc, Mutex};
 use zerocopy::FromBytes;
 
 use summit_core::crypto::{hash, Session};
-use summit_core::wire::ChunkHeader;
-use summit_services::{ChunkCache, KnownSchema};
+use summit_core::recovery::{Gone, Nack};
+use summit_core::wire::{self, ChunkHeader};
+use summit_services::{ChunkCache, KnownSchema, OutgoingChunk, SendTarget};
 
 /// How long to wait for data before considering the session dead.
 const RECEIVE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -19,10 +20,12 @@ use super::IncomingChunk;
 use crate::delivery::DeliveryTracker;
 use crate::dispatch::ServiceDispatcher;
 
+#[allow(clippy::too_many_arguments)]
 pub async fn receive_loop(
     socket: Arc<UdpSocket>,
     session: Arc<Mutex<Session>>,
     chunk_tx: mpsc::Sender<IncomingChunk>,
+    outbound_tx: mpsc::Sender<(SendTarget, OutgoingChunk)>,
     cache: ChunkCache,
     tracker: DeliveryTracker,
     peer_addr: String,
@@ -118,6 +121,19 @@ pub async fn receive_loop(
 
         // Only deliver to application on FIRST receipt
         if delivery_count == 1 {
+            // Handle recovery protocol directly (below service layer)
+            if header.schema_id == wire::recovery_hash() {
+                handle_recovery(
+                    &header,
+                    &incoming.payload,
+                    &peer_pubkey,
+                    &cache,
+                    &outbound_tx,
+                )
+                .await;
+                continue;
+            }
+
             // Try service dispatch first
             let dispatched = dispatcher.dispatch(&peer_pubkey, &header, &incoming.payload);
 
@@ -134,6 +150,107 @@ pub async fn receive_loop(
                 delivery_count,
                 "duplicate chunk via multipath, deduplicating"
             );
+        }
+    }
+}
+
+async fn handle_recovery(
+    header: &ChunkHeader,
+    payload: &[u8],
+    peer_pubkey: &[u8; 32],
+    cache: &ChunkCache,
+    chunk_tx: &mpsc::Sender<(SendTarget, OutgoingChunk)>,
+) {
+    let type_tag = header.type_tag;
+    match type_tag {
+        wire::recovery::NACK => {
+            let nack: Nack = match serde_json::from_slice(payload) {
+                Ok(n) => n,
+                Err(e) => {
+                    tracing::warn!(error = %e, "invalid NACK payload");
+                    return;
+                }
+            };
+
+            let is_targeted = nack.attempt == 0;
+
+            tracing::info!(
+                peer = hex::encode(&peer_pubkey[..8]),
+                missing = nack.missing.len(),
+                attempt = nack.attempt,
+                targeted = is_targeted,
+                "NACK received, retransmitting cached chunks"
+            );
+
+            let mut gone_hashes = Vec::new();
+
+            for content_hash in &nack.missing {
+                match cache.get(content_hash) {
+                    Ok(Some(data)) => {
+                        let chunk = OutgoingChunk {
+                            type_tag: 2, // file data
+                            schema_id: KnownSchema::FileData.id(),
+                            payload: data,
+                            priority_flags: 0x02,
+                        };
+                        let target = SendTarget::Peer {
+                            public_key: *peer_pubkey,
+                        };
+                        if let Err(e) = chunk_tx.send((target, chunk)).await {
+                            tracing::warn!(error = %e, "failed to enqueue retransmit");
+                            return;
+                        }
+                    }
+                    Ok(None) => {
+                        gone_hashes.push(*content_hash);
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            hash = hex::encode(content_hash),
+                            "cache read error during retransmit"
+                        );
+                        gone_hashes.push(*content_hash);
+                    }
+                }
+            }
+
+            // Only send GONE for targeted NACKs (attempt 0).
+            // On broadcast NACKs, peers that don't have the chunk just stay silent.
+            if is_targeted && !gone_hashes.is_empty() {
+                let gone = Gone {
+                    hashes: gone_hashes,
+                };
+                if let Ok(payload) = serde_json::to_vec(&gone) {
+                    let chunk = OutgoingChunk {
+                        type_tag: wire::recovery::GONE,
+                        schema_id: wire::recovery_hash(),
+                        payload: bytes::Bytes::from(payload),
+                        priority_flags: 0x02,
+                    };
+                    let _ = chunk_tx
+                        .send((
+                            SendTarget::Peer {
+                                public_key: *peer_pubkey,
+                            },
+                            chunk,
+                        ))
+                        .await;
+                }
+            }
+        }
+
+        wire::recovery::GONE => {
+            // GONE is handled by the chunk manager (receiver side).
+            // It arrives here via the general chunk channel.
+            tracing::debug!(
+                peer = hex::encode(&peer_pubkey[..8]),
+                "GONE received — forwarded via chunk channel"
+            );
+        }
+
+        _ => {
+            tracing::warn!(type_tag, "unknown recovery type_tag");
         }
     }
 }

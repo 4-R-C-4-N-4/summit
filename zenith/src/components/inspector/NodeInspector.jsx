@@ -6,11 +6,9 @@ import TrustControls from './TrustControls';
 import PulseDot from '../common/PulseDot';
 
 export default function NodeInspector({ nodeId }) {
-  const { peers, trust } = useDaemon();
+  const { peers } = useDaemon();
   const peer = peers.find(p => p.public_key === nodeId);
-  const trustMap = {};
-  trust.forEach(t => { trustMap[t.public_key] = t.level; });
-  const trustLevel = trustMap[nodeId] || 'Untrusted';
+  const trustLevel = peer?.trust_level || 'Untrusted';
 
   if (!peer) {
     return (

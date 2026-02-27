@@ -27,7 +27,7 @@ use std::sync::Arc;
 pub async fn run(
     store: ComputeStore,
     settings: ComputeSettings,
-    chunk_tx: mpsc::UnboundedSender<(SendTarget, OutgoingChunk)>,
+    chunk_tx: mpsc::Sender<(SendTarget, OutgoingChunk)>,
 ) {
     let max_tasks = if settings.max_concurrent_tasks == 0 {
         std::thread::available_parallelism()
@@ -68,7 +68,7 @@ pub async fn run(
                 let task_dir = work_dir.join(&task_id[..16.min(task_id.len())]);
 
                 // Tell the submitter we're running.
-                send_ack(&chunk_tx, &peer_pubkey, &task_id, TaskStatus::Running);
+                send_ack(&chunk_tx, &peer_pubkey, &task_id, TaskStatus::Running).await;
 
                 let start = Instant::now();
                 let result_value = execute_task(&task.submit.payload, &task_dir).await;
@@ -90,7 +90,7 @@ pub async fn run(
 
                     let mut sent = 0usize;
                     for path in &output_files {
-                        match send_output_file(&chunk_tx, &peer_pubkey, path) {
+                        match send_output_file(&chunk_tx, &peer_pubkey, path).await {
                             Ok(n) => sent += n,
                             Err(e) => {
                                 tracing::warn!(
@@ -133,7 +133,7 @@ pub async fn run(
                     result: result_json,
                     elapsed_ms,
                 };
-                send_result(&chunk_tx, &peer_pubkey, &tr);
+                send_result(&chunk_tx, &peer_pubkey, &tr).await;
 
                 tracing::info!(
                     task_id = &task_id[..16.min(task_id.len())],
@@ -234,8 +234,8 @@ async fn collect_output_files(task_dir: &Path) -> Vec<PathBuf> {
 
 /// Chunk a file and enqueue the chunks for sending to the submitter.
 /// Returns the number of chunks enqueued.
-fn send_output_file(
-    chunk_tx: &mpsc::UnboundedSender<(SendTarget, OutgoingChunk)>,
+async fn send_output_file(
+    chunk_tx: &mpsc::Sender<(SendTarget, OutgoingChunk)>,
     peer_pubkey: &[u8; 32],
     path: &Path,
 ) -> Result<usize, String> {
@@ -248,6 +248,7 @@ fn send_output_file(
     for chunk in chunks {
         chunk_tx
             .send((target.clone(), chunk))
+            .await
             .map_err(|_| "send queue closed".to_string())?;
     }
 
@@ -256,8 +257,8 @@ fn send_output_file(
 
 // ── Helpers to send compute protocol chunks back to the submitter ────────────
 
-fn send_ack(
-    chunk_tx: &mpsc::UnboundedSender<(SendTarget, OutgoingChunk)>,
+async fn send_ack(
+    chunk_tx: &mpsc::Sender<(SendTarget, OutgoingChunk)>,
     peer_pubkey: &[u8; 32],
     task_id: &str,
     status: TaskStatus,
@@ -283,16 +284,18 @@ fn send_ack(
         payload: bytes::Bytes::from(raw),
         priority_flags: 0x02,
     };
-    let _ = chunk_tx.send((
-        SendTarget::Peer {
-            public_key: *peer_pubkey,
-        },
-        chunk,
-    ));
+    let _ = chunk_tx
+        .send((
+            SendTarget::Peer {
+                public_key: *peer_pubkey,
+            },
+            chunk,
+        ))
+        .await;
 }
 
-fn send_result(
-    chunk_tx: &mpsc::UnboundedSender<(SendTarget, OutgoingChunk)>,
+async fn send_result(
+    chunk_tx: &mpsc::Sender<(SendTarget, OutgoingChunk)>,
     peer_pubkey: &[u8; 32],
     result: &TaskResult,
 ) {
@@ -313,10 +316,12 @@ fn send_result(
         payload: bytes::Bytes::from(raw),
         priority_flags: 0x02,
     };
-    let _ = chunk_tx.send((
-        SendTarget::Peer {
-            public_key: *peer_pubkey,
-        },
-        chunk,
-    ));
+    let _ = chunk_tx
+        .send((
+            SendTarget::Peer {
+                public_key: *peer_pubkey,
+            },
+            chunk,
+        ))
+        .await;
 }

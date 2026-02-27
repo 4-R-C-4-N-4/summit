@@ -5,10 +5,13 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
 
+use summit_core::recovery::Gone;
+use summit_core::wire;
 use summit_services::{
-    ChunkCache, FileReassembler, SessionTable, TrustLevel, TrustRegistry, UntrustedBuffer,
+    ChunkCache, FileReassembler, OutgoingChunk, SendTarget, SessionTable, TrustLevel,
+    TrustRegistry, UntrustedBuffer,
 };
 
 use crate::delivery::DeliveryTracker;
@@ -22,10 +25,12 @@ pub struct ChunkManager {
     trust: TrustRegistry,
     untrusted_buffer: UntrustedBuffer,
     dispatcher: Arc<ServiceDispatcher>,
+    outbound_tx: mpsc::Sender<(SendTarget, OutgoingChunk)>,
     shutdown: broadcast::Receiver<()>,
 }
 
 impl ChunkManager {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         sessions: SessionTable,
         cache: ChunkCache,
@@ -34,6 +39,7 @@ impl ChunkManager {
         trust: TrustRegistry,
         untrusted_buffer: UntrustedBuffer,
         dispatcher: Arc<ServiceDispatcher>,
+        outbound_tx: mpsc::Sender<(SendTarget, OutgoingChunk)>,
         shutdown: broadcast::Receiver<()>,
     ) -> Self {
         Self {
@@ -44,6 +50,7 @@ impl ChunkManager {
             trust,
             untrusted_buffer,
             dispatcher,
+            outbound_tx,
             shutdown,
         }
     }
@@ -90,6 +97,7 @@ impl ChunkManager {
             let dispatcher = self.dispatcher.clone();
             let cache = self.cache.clone();
             let tracker = self.delivery_tracker.clone();
+            let outbound_tx = self.outbound_tx.clone();
 
             // Create channel for received chunks
             let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::channel::<super::IncomingChunk>(100);
@@ -133,13 +141,29 @@ impl ChunkManager {
                         "chunk received"
                     );
 
+                    // Handle GONE — sender can't provide these chunks
+                    if chunk.schema_id == wire::recovery_hash()
+                        && chunk.type_tag == wire::recovery::GONE
+                    {
+                        if let Ok(gone) = serde_json::from_slice::<Gone>(&chunk.payload) {
+                            let stalled = reassembler.missing_chunks().await;
+                            for (filename, missing) in stalled {
+                                let any_gone = missing.iter().any(|h| gone.hashes.contains(h));
+                                if any_gone {
+                                    reassembler.abandon(&filename).await;
+                                }
+                            }
+                        }
+                        continue;
+                    }
+
                     // Handle file metadata chunks (type_tag 3)
                     if chunk.type_tag == 3 {
                         if let Ok(metadata) =
                             serde_json::from_slice::<summit_services::FileMetadata>(&chunk.payload)
                         {
                             tracing::info!(filename = %metadata.filename, chunks = metadata.chunk_hashes.len(), "file transfer started");
-                            reassembler.add_metadata(metadata).await;
+                            reassembler.add_metadata(metadata, peer_pubkey).await;
                         }
                     }
 
@@ -164,6 +188,7 @@ impl ChunkManager {
                     socket,
                     crypto,
                     chunk_tx,
+                    outbound_tx,
                     cache,
                     tracker,
                     peer_addr_str,

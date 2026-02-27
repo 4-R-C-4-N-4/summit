@@ -12,7 +12,7 @@ pub struct SendWorker {
     sessions: SessionTable,
     cache: ChunkCache,
     trust: TrustRegistry,
-    chunk_rx: mpsc::UnboundedReceiver<(SendTarget, OutgoingChunk)>,
+    chunk_rx: mpsc::Receiver<(SendTarget, OutgoingChunk)>,
     shutdown: broadcast::Receiver<()>,
 }
 
@@ -21,7 +21,7 @@ impl SendWorker {
         sessions: SessionTable,
         cache: ChunkCache,
         trust: TrustRegistry,
-        chunk_rx: mpsc::UnboundedReceiver<(SendTarget, OutgoingChunk)>,
+        chunk_rx: mpsc::Receiver<(SendTarget, OutgoingChunk)>,
         shutdown: broadcast::Receiver<()>,
     ) -> Self {
         Self {

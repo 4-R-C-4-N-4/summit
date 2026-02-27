@@ -22,7 +22,7 @@ pub struct ApiState {
     pub sessions: SessionTable,
     pub cache: ChunkCache,
     pub registry: PeerRegistry,
-    pub chunk_tx: tokio::sync::mpsc::UnboundedSender<(SendTarget, OutgoingChunk)>,
+    pub chunk_tx: tokio::sync::mpsc::Sender<(SendTarget, OutgoingChunk)>,
     pub reassembler: Arc<summit_services::FileReassembler>,
     pub trust: TrustRegistry,
     pub untrusted_buffer: UntrustedBuffer,

@@ -109,7 +109,7 @@ pub async fn handle_send_message(
     };
 
     let target = SendTarget::Peer { public_key: to };
-    state.chunk_tx.send((target, chunk)).map_err(|_| {
+    state.chunk_tx.send((target, chunk)).await.map_err(|_| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             "send queue closed".to_string(),

@@ -5,6 +5,7 @@ use bytes::Bytes;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::Mutex;
 
 use crate::chunk_types::OutgoingChunk;
@@ -80,7 +81,22 @@ pub struct FileReassembler {
 struct FileAssembly {
     metadata: FileMetadata,
     chunks_received: HashMap<[u8; 32], Bytes>,
+    started_at: Instant,
+    last_chunk_at: Instant,
+    nack_count: u8,
+    sender_pubkey: [u8; 32],
 }
+
+/// Info about a stalled file assembly, returned by `stalled_assemblies()`.
+pub struct StalledAssembly {
+    pub filename: String,
+    pub missing: Vec<[u8; 32]>,
+    pub attempt: u8,
+    pub sender_pubkey: [u8; 32],
+}
+
+/// Maximum age for an in-progress file assembly before it is considered stale.
+const ASSEMBLY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 impl FileReassembler {
     pub fn new(output_dir: PathBuf) -> Self {
@@ -91,27 +107,49 @@ impl FileReassembler {
         }
     }
 
-    /// Process a metadata chunk — start tracking this file
-    pub async fn add_metadata(&self, metadata: FileMetadata) {
+    /// Process a metadata chunk — start tracking this file.
+    ///
+    /// `sender_pubkey` is the peer that sent the metadata, used for targeted
+    /// NACK recovery (attempt 0 goes to the original sender).
+    pub async fn add_metadata(&self, metadata: FileMetadata, sender_pubkey: [u8; 32]) {
         let mut active = self.active.lock().await;
+        Self::cleanup_stale(&mut active);
+        let now = Instant::now();
         active.insert(
             metadata.filename.clone(),
             FileAssembly {
                 metadata,
                 chunks_received: HashMap::new(),
+                started_at: now,
+                last_chunk_at: now,
+                nack_count: 0,
+                sender_pubkey,
             },
         );
+    }
+
+    /// Remove assemblies older than `ASSEMBLY_TIMEOUT`.
+    fn cleanup_stale(active: &mut HashMap<String, FileAssembly>) {
+        active.retain(|filename, assembly| {
+            let stale = assembly.started_at.elapsed() > ASSEMBLY_TIMEOUT;
+            if stale {
+                tracing::warn!(filename, "removing stale file assembly (timed out)");
+            }
+            !stale
+        });
     }
 
     /// Process a data chunk — add to file assembly
     pub async fn add_chunk(&self, content_hash: [u8; 32], data: Bytes) -> Result<Option<PathBuf>> {
         let mut active = self.active.lock().await;
+        Self::cleanup_stale(&mut active);
         // Find which file this chunk belongs to
         let mut completed_file: Option<(String, PathBuf)> = None;
 
         for (filename, assembly) in active.iter_mut() {
             if assembly.metadata.chunk_hashes.contains(&content_hash) {
                 assembly.chunks_received.insert(content_hash, data);
+                assembly.last_chunk_at = Instant::now();
 
                 // Check if complete
                 if assembly.chunks_received.len() == assembly.metadata.chunk_hashes.len() {
@@ -125,6 +163,15 @@ impl FileReassembler {
 
                     let output_path = self.output_dir.join(&assembly.metadata.filename);
                     std::fs::write(&output_path, file_data)?;
+
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        std::fs::set_permissions(
+                            &output_path,
+                            std::fs::Permissions::from_mode(0o755),
+                        )?;
+                    }
 
                     tracing::info!(
                         filename = %assembly.metadata.filename,
@@ -161,6 +208,76 @@ impl FileReassembler {
     pub async fn in_progress(&self) -> Vec<String> {
         self.active.lock().await.keys().cloned().collect()
     }
+
+    /// For each in-progress assembly, return the list of content hashes
+    /// that have not yet been received.
+    pub async fn missing_chunks(&self) -> Vec<(String, Vec<[u8; 32]>)> {
+        let active = self.active.lock().await;
+        active
+            .iter()
+            .map(|(filename, assembly)| {
+                let missing: Vec<[u8; 32]> = assembly
+                    .metadata
+                    .chunk_hashes
+                    .iter()
+                    .filter(|h| !assembly.chunks_received.contains_key(*h))
+                    .copied()
+                    .collect();
+                (filename.clone(), missing)
+            })
+            .filter(|(_, missing)| !missing.is_empty())
+            .collect()
+    }
+
+    /// Assemblies that have stalled (no chunk received recently) and haven't
+    /// exhausted their NACK attempts.
+    pub async fn stalled_assemblies(
+        &self,
+        nack_delay: std::time::Duration,
+    ) -> Vec<StalledAssembly> {
+        let active = self.active.lock().await;
+        active
+            .iter()
+            .filter(|(_, a)| {
+                a.last_chunk_at.elapsed() > nack_delay
+                    && a.nack_count < summit_core::recovery::MAX_NACK_ATTEMPTS
+            })
+            .filter_map(|(filename, a)| {
+                let missing: Vec<[u8; 32]> = a
+                    .metadata
+                    .chunk_hashes
+                    .iter()
+                    .filter(|h| !a.chunks_received.contains_key(*h))
+                    .copied()
+                    .collect();
+                if missing.is_empty() {
+                    return None;
+                }
+                Some(StalledAssembly {
+                    filename: filename.clone(),
+                    missing,
+                    attempt: a.nack_count,
+                    sender_pubkey: a.sender_pubkey,
+                })
+            })
+            .collect()
+    }
+
+    /// Mark that a NACK was sent for this assembly.
+    pub async fn increment_nack_count(&self, filename: &str) {
+        let mut active = self.active.lock().await;
+        if let Some(assembly) = active.get_mut(filename) {
+            assembly.nack_count += 1;
+        }
+    }
+
+    /// Remove an assembly permanently. Called when recovery is impossible.
+    pub async fn abandon(&self, filename: &str) {
+        let mut active = self.active.lock().await;
+        if active.remove(filename).is_some() {
+            tracing::warn!(filename, "file assembly abandoned — chunks unrecoverable");
+        }
+    }
 }
 
 // ── ChunkService implementation ───────────────────────────────────────────────
@@ -193,20 +310,21 @@ impl ChunkService for FileReassembler {
 
     fn handle_chunk(
         &self,
-        _peer_pubkey: &[u8; 32],
+        peer_pubkey: &[u8; 32],
         header: &ChunkHeader,
         payload: &[u8],
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let data = Bytes::copy_from_slice(payload);
         let content_hash = header.content_hash;
         let type_tag = header.type_tag;
+        let sender = *peer_pubkey;
         let this = self.clone_inner();
 
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async move {
                 if type_tag == 3 {
                     if let Ok(metadata) = serde_json::from_slice::<FileMetadata>(&data) {
-                        this.add_metadata(metadata).await;
+                        this.add_metadata(metadata, sender).await;
                     }
                 } else if type_tag == 2 {
                     if let Err(e) = this.add_chunk(content_hash, data).await {
@@ -264,7 +382,7 @@ mod tests {
             chunk_hashes: vec![hash],
         };
 
-        reassembler.add_metadata(metadata).await;
+        reassembler.add_metadata(metadata, [0xAA; 32]).await;
         assert_eq!(reassembler.in_progress().await.len(), 1);
 
         let result = reassembler

@@ -20,7 +20,9 @@ pub use chunk_types::{IncomingChunk, OutgoingChunk};
 pub use compute_service::ComputeService;
 pub use compute_store::{ComputeStore, ComputeTask};
 pub use compute_types::{ComputeEnvelope, TaskAck, TaskResult, TaskStatus, TaskSubmit};
-pub use file_transfer::{chunk_file, FileMetadata, FileReassembler, MAX_CHUNK_SIZE};
+pub use file_transfer::{
+    chunk_file, FileMetadata, FileReassembler, StalledAssembly, MAX_CHUNK_SIZE,
+};
 pub use message_store::MessageStore;
 pub use messaging_service::{messaging_schema_id, msg_types, MessageEnvelope, MessagingService};
 pub use peer::{new_registry, PeerEntry, PeerRegistry};

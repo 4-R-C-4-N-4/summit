@@ -16,14 +16,14 @@ pub struct ComputeService {
     store: ComputeStore,
     #[allow(dead_code)]
     settings: ComputeSettings,
-    chunk_tx: mpsc::UnboundedSender<(SendTarget, OutgoingChunk)>,
+    chunk_tx: mpsc::Sender<(SendTarget, OutgoingChunk)>,
 }
 
 impl ComputeService {
     pub fn new(
         store: ComputeStore,
         settings: ComputeSettings,
-        chunk_tx: mpsc::UnboundedSender<(SendTarget, OutgoingChunk)>,
+        chunk_tx: mpsc::Sender<(SendTarget, OutgoingChunk)>,
     ) -> Self {
         Self {
             store,
@@ -64,7 +64,7 @@ impl ComputeService {
         let target = SendTarget::Peer {
             public_key: *peer_pubkey,
         };
-        if let Err(e) = self.chunk_tx.send((target, chunk)) {
+        if let Err(e) = self.chunk_tx.try_send((target, chunk)) {
             tracing::warn!(error = %e, "failed to enqueue task_ack");
         }
     }

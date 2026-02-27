@@ -26,6 +26,7 @@ mod fault;
 mod files;
 mod infra;
 mod messaging;
+mod recovery;
 mod service_config;
 mod sessions;
 mod status;

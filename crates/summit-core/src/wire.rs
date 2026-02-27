@@ -1,9 +1,6 @@
 //! Summit wire format — on-wire types for all Summit communication.
 //!
 //! These types ARE the protocol. Every field, every size, every reserved byte
-//! is part of the wire format. Changing anything here after Zenith is a
-//! breaking change. Read docs/wire-format.md before modifying.
-//!
 //! All types are #[repr(C, packed)] for deterministic layout and use
 //! zerocopy derives for safe, allocation-free serialization. There is no
 //! unsafe code in this module.
@@ -85,6 +82,21 @@ pub fn compute_hash() -> ServiceHash {
     service_hash(b"summit.compute")
 }
 
+pub fn recovery_hash() -> ServiceHash {
+    service_hash(b"summit.recovery")
+}
+
+/// Type tags for the recovery protocol.
+/// These use schema_id = recovery_hash() to distinguish from application chunks.
+pub mod recovery {
+    /// Receiver -> Sender: "I'm missing these chunks, please re-send."
+    pub const NACK: u16 = 1;
+
+    /// Sender -> Receiver: "I don't have these chunks (cache evicted)."
+    /// The receiver should give up on this assembly rather than retrying forever.
+    pub const GONE: u16 = 2;
+}
+
 // ── Capability Announcement ───────────────────────────────────────────────────
 
 /// Broadcast via ff02::1 multicast to announce ONE service.
@@ -93,7 +105,7 @@ pub fn compute_hash() -> ServiceHash {
 /// Receivers collect datagrams by `public_key` and build the peer's full
 /// service set when `service_index` values 0..service_count-1 are all present.
 ///
-/// Wire size: 76 bytes (was 74 — two new fields: service_count, service_index).
+/// Wire size: 76 bytes
 #[derive(Debug, Clone, AsBytes, FromBytes, FromZeroes)]
 #[repr(C, packed)]
 pub struct CapabilityAnnouncement {
@@ -140,7 +152,6 @@ assert_eq_size!(CapabilityAnnouncement, [u8; 76]);
 /// the responder can verify which capability is being requested, and a nonce
 /// that contributes to the derived session ID.
 ///
-/// Wire size: 120 bytes.
 /// Noise_XX handshake message 1 — sent by the session initiator.
 /// Wire size: 80 bytes
 #[derive(Debug, Clone, AsBytes, FromBytes, FromZeroes)]
