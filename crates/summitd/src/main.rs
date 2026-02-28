@@ -255,6 +255,8 @@ async fn main() -> Result<()> {
             dispatcher.clone(),
             chunk_tx.clone(),
             shutdown_tx.subscribe(),
+            config.network.bulk_rate,
+            config.network.bulk_burst,
         )
         .run(),
     );

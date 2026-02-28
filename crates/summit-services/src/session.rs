@@ -71,7 +71,7 @@ pub struct ActiveSession {
     pub meta: SessionMeta,
     pub crypto: Arc<Mutex<Session>>,
     pub socket: Arc<UdpSocket>, // Dedicated socket for chunk I/O
-    pub bucket: Mutex<TokenBucket>,
+    pub bucket: Arc<Mutex<TokenBucket>>,
 }
 
 /// The session table — shared across all tasks.

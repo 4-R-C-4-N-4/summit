@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use tokio::sync::{broadcast, mpsc};
 
-use summit_core::recovery::Gone;
+use summit_core::recovery::{Capacity, Gone};
 use summit_core::wire;
 use summit_services::{
     ChunkCache, FileReassembler, OutgoingChunk, SendTarget, SessionTable, TrustLevel,
@@ -27,6 +27,8 @@ pub struct ChunkManager {
     dispatcher: Arc<ServiceDispatcher>,
     outbound_tx: mpsc::Sender<(SendTarget, OutgoingChunk)>,
     shutdown: broadcast::Receiver<()>,
+    bulk_rate: u32,
+    bulk_burst: u32,
 }
 
 impl ChunkManager {
@@ -41,6 +43,8 @@ impl ChunkManager {
         dispatcher: Arc<ServiceDispatcher>,
         outbound_tx: mpsc::Sender<(SendTarget, OutgoingChunk)>,
         shutdown: broadcast::Receiver<()>,
+        bulk_rate: u32,
+        bulk_burst: u32,
     ) -> Self {
         Self {
             sessions,
@@ -52,6 +56,8 @@ impl ChunkManager {
             dispatcher,
             outbound_tx,
             shutdown,
+            bulk_rate,
+            bulk_burst,
         }
     }
 
@@ -90,6 +96,7 @@ impl ChunkManager {
             let peer_addr = active.meta.peer_addr;
             let crypto = active.crypto.clone();
             let socket = active.socket.clone();
+            let bucket = active.bucket.clone();
             let reassembler = self.reassembler.clone();
             let peer_pubkey = active.meta.peer_pubkey;
             let trust = self.trust.clone();
@@ -98,6 +105,29 @@ impl ChunkManager {
             let cache = self.cache.clone();
             let tracker = self.delivery_tracker.clone();
             let outbound_tx = self.outbound_tx.clone();
+
+            // Send our bulk capacity to the peer
+            let capacity = Capacity {
+                bulk_rate: self.bulk_rate,
+                bulk_burst: self.bulk_burst,
+            };
+            if let Ok(payload) = serde_json::to_vec(&capacity) {
+                let cap_chunk = OutgoingChunk {
+                    type_tag: wire::recovery::CAPACITY,
+                    schema_id: wire::recovery_hash(),
+                    payload: bytes::Bytes::from(payload),
+                    priority_flags: 0x01, // Realtime — bypasses token bucket
+                };
+                let cap_tx = self.outbound_tx.clone();
+                let _ = cap_tx
+                    .send((
+                        SendTarget::Peer {
+                            public_key: peer_pubkey,
+                        },
+                        cap_chunk,
+                    ))
+                    .await;
+            }
 
             // Create channel for received chunks
             let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::channel::<super::IncomingChunk>(100);
@@ -194,6 +224,7 @@ impl ChunkManager {
                     peer_addr_str,
                     dispatcher,
                     peer_pubkey,
+                    bucket,
                 )
                 .await
                 {

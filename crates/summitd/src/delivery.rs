@@ -34,7 +34,7 @@ impl DeliveryTracker {
         self.deliveries.get(content_hash).map(|v| v.clone())
     }
 
-    /// Count how many peers delivered this chunk.
+    /// Count how many times this chunk was delivered (including retransmissions).
     pub fn delivery_count(&self, content_hash: &[u8; 32]) -> usize {
         self.deliveries
             .get(content_hash)
@@ -42,30 +42,46 @@ impl DeliveryTracker {
             .unwrap_or(0)
     }
 
-    /// Print delivery stats for chunks with multiple paths.
+    /// Print delivery stats for chunks with multiple deliveries.
     pub fn print_stats(&self) {
-        let multipath_count = self
-            .deliveries
-            .iter()
-            .filter(|entry| entry.value().len() > 1)
-            .count();
+        use std::collections::HashSet;
 
-        if multipath_count > 0 {
+        let mut multipath_count = 0;
+        let mut retransmit_count = 0;
+
+        for entry in self.deliveries.iter() {
+            let deliveries = entry.value();
+            if deliveries.len() > 1 {
+                let unique_peers: HashSet<_> = deliveries.iter().map(|(p, _)| p.as_str()).collect();
+                if unique_peers.len() > 1 {
+                    multipath_count += 1;
+                } else {
+                    retransmit_count += 1;
+                }
+            }
+        }
+
+        if multipath_count > 0 || retransmit_count > 0 {
             tracing::info!(
                 total_chunks = self.deliveries.len(),
                 multipath_chunks = multipath_count,
+                retransmitted_chunks = retransmit_count,
                 "delivery tracker stats"
             );
+        }
 
-            for entry in self.deliveries.iter() {
-                let deliveries = entry.value();
-                if deliveries.len() > 1 {
+        // Only log individual entries for true multipath (different peers)
+        for entry in self.deliveries.iter() {
+            let deliveries = entry.value();
+            if deliveries.len() > 1 {
+                let unique_peers: HashSet<_> = deliveries.iter().map(|(p, _)| p.as_str()).collect();
+                if unique_peers.len() > 1 {
                     let hash = hex::encode(entry.key());
-                    let peers: Vec<_> = deliveries.iter().map(|(p, _)| p.clone()).collect();
-
+                    let peers: Vec<_> = unique_peers.into_iter().collect();
                     tracing::info!(
                         chunk = &hash[..16],
-                        paths = deliveries.len(),
+                        unique_paths = peers.len(),
+                        total_deliveries = deliveries.len(),
                         peers = ?peers,
                         "multipath delivery detected"
                     );

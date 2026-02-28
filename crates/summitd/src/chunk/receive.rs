@@ -8,9 +8,9 @@ use tokio::sync::{mpsc, Mutex};
 use zerocopy::FromBytes;
 
 use summit_core::crypto::{hash, Session};
-use summit_core::recovery::{Gone, Nack};
+use summit_core::recovery::{Capacity, Gone, Nack};
 use summit_core::wire::{self, ChunkHeader};
-use summit_services::{ChunkCache, KnownSchema, OutgoingChunk, SendTarget};
+use summit_services::{ChunkCache, KnownSchema, OutgoingChunk, SendTarget, TokenBucket};
 
 /// How long to wait for data before considering the session dead.
 const RECEIVE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -31,7 +31,10 @@ pub async fn receive_loop(
     peer_addr: String,
     dispatcher: Arc<ServiceDispatcher>,
     peer_pubkey: [u8; 32],
+    bucket: Arc<Mutex<TokenBucket>>,
 ) -> Result<()> {
+    // Buffer must fit: 8 nonce + 72 header + MAX_PAYLOAD(65535) + 16 MAC = 65631
+    // Current 66560 is sufficient.
     let mut buf = vec![0u8; 65536 + 1024];
 
     loop {
@@ -129,6 +132,7 @@ pub async fn receive_loop(
                     &peer_pubkey,
                     &cache,
                     &outbound_tx,
+                    &bucket,
                 )
                 .await;
                 continue;
@@ -160,6 +164,7 @@ async fn handle_recovery(
     peer_pubkey: &[u8; 32],
     cache: &ChunkCache,
     chunk_tx: &mpsc::Sender<(SendTarget, OutgoingChunk)>,
+    bucket: &Arc<Mutex<TokenBucket>>,
 ) {
     let type_tag = header.type_tag;
     match type_tag {
@@ -192,7 +197,7 @@ async fn handle_recovery(
                             type_tag: 2, // file data
                             schema_id: KnownSchema::FileData.id(),
                             payload: data,
-                            priority_flags: 0x02,
+                            priority_flags: 0x01, // Realtime — bypass token bucket for recovery
                         };
                         let target = SendTarget::Peer {
                             public_key: *peer_pubkey,
@@ -202,11 +207,11 @@ async fn handle_recovery(
                             return;
                         }
                         retransmitted += 1;
-                        // Pace retransmissions to avoid exhausting the token bucket.
-                        // Bulk rate is 64 tokens/sec with burst of 32 — without pacing,
-                        // the burst is consumed instantly and the rest are dropped.
-                        if retransmitted % 16 == 0 {
-                            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                        // Pace retransmissions to avoid flooding the receiver.
+                        // With Realtime priority (bypasses token bucket), pacing
+                        // is the only rate control for recovery traffic.
+                        if retransmitted % 32 == 0 {
+                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                         }
                     }
                     Ok(None) => {
@@ -254,6 +259,32 @@ async fn handle_recovery(
             tracing::debug!(
                 peer = hex::encode(&peer_pubkey[..8]),
                 "GONE received — forwarded via chunk channel"
+            );
+        }
+
+        wire::recovery::CAPACITY => {
+            let cap: Capacity = match serde_json::from_slice(payload) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(error = %e, "invalid CAPACITY payload");
+                    return;
+                }
+            };
+            let rate = if cap.bulk_rate == 0 {
+                128.0
+            } else {
+                cap.bulk_rate as f64
+            };
+            let burst = if cap.bulk_burst == 0 {
+                64.0
+            } else {
+                cap.bulk_burst as f64
+            };
+            bucket.lock().await.reconfigure(rate, burst);
+            tracing::info!(
+                rate,
+                burst,
+                "peer advertised bulk capacity, token bucket reconfigured"
             );
         }
 

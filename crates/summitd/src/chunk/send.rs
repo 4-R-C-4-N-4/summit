@@ -37,6 +37,8 @@ pub async fn send_chunk(
         version: CHUNK_VERSION,
     };
 
+    // Plaintext: [72-byte header] + [payload]
+    // After encryption: [8-byte nonce] + [plaintext + 16-byte MAC]
     let mut plaintext = Vec::with_capacity(72 + chunk.payload.len());
     plaintext.extend_from_slice(header.as_bytes());
     plaintext.extend_from_slice(&chunk.payload);

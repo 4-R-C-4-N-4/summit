@@ -10,7 +10,8 @@ use summit_services::{FileReassembler, OutgoingChunk, SendTarget};
 use tokio::sync::{broadcast, mpsc};
 
 /// How long to wait after the last chunk before sending a NACK.
-const NACK_DELAY: Duration = Duration::from_secs(3);
+/// Reduced from 3s — capacity exchange prevents premature NACKs.
+const NACK_DELAY: Duration = Duration::from_secs(2);
 
 /// How often to check for stalled assemblies.
 const CHECK_INTERVAL: Duration = Duration::from_secs(2);
@@ -83,7 +84,9 @@ async fn send_nacks(
             }
         }
 
-        reassembler.increment_nack_count(&assembly.filename).await;
+        reassembler
+            .increment_nack_count(&assembly.filename, assembly.missing.len())
+            .await;
 
         tracing::info!(
             filename = assembly.filename,

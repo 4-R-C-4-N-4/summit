@@ -109,11 +109,14 @@ impl SendWorker {
                 continue;
             }
 
-            // Check token bucket
-            let allowed = session.bucket.lock().await.allow();
-            if !allowed {
-                tracing::debug!(%peer_addr, ?contract, "chunk dropped — rate limited");
-                continue;
+            // Realtime-priority chunks bypass the token bucket entirely.
+            // This includes NACK retransmissions and recovery protocol messages.
+            if chunk.priority_flags != 0x01 {
+                let allowed = session.bucket.lock().await.allow();
+                if !allowed {
+                    tracing::debug!(%peer_addr, ?contract, "chunk dropped — rate limited");
+                    continue;
+                }
             }
 
             // Construct chunk peer address

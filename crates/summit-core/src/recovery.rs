@@ -24,8 +24,18 @@ pub struct Nack {
 /// (well under MAX_PAYLOAD of 65535).
 pub const MAX_NACK_HASHES: usize = 512;
 
-/// Maximum NACK attempts before the receiver gives up.
-pub const MAX_NACK_ATTEMPTS: u8 = 3;
+/// Max consecutive NACK attempts with no progress before giving up.
+pub const MAX_NACK_STALLS: u8 = 3;
+
+/// Capacity advertisement — sent post-handshake so the sender tunes
+/// its token bucket to the receiver's advertised rate.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Capacity {
+    /// Tokens/sec the receiver can absorb.
+    pub bulk_rate: u32,
+    /// Burst capacity.
+    pub bulk_burst: u32,
+}
 
 /// GONE payload — sent by the sender when requested chunks are no longer cached.
 ///

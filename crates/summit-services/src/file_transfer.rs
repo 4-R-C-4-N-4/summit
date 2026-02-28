@@ -85,6 +85,7 @@ struct FileAssembly {
     last_chunk_at: Instant,
     nack_count: u8,
     sender_pubkey: [u8; 32],
+    missing_at_last_nack: usize,
 }
 
 /// Info about a stalled file assembly, returned by `stalled_assemblies()`.
@@ -124,6 +125,7 @@ impl FileReassembler {
                 last_chunk_at: now,
                 nack_count: 0,
                 sender_pubkey,
+                missing_at_last_nack: 0,
             },
         );
     }
@@ -235,13 +237,10 @@ impl FileReassembler {
         &self,
         nack_delay: std::time::Duration,
     ) -> Vec<StalledAssembly> {
-        let active = self.active.lock().await;
+        let mut active = self.active.lock().await;
         active
-            .iter()
-            .filter(|(_, a)| {
-                a.last_chunk_at.elapsed() > nack_delay
-                    && a.nack_count < summit_core::recovery::MAX_NACK_ATTEMPTS
-            })
+            .iter_mut()
+            .filter(|(_, a)| a.last_chunk_at.elapsed() > nack_delay)
             .filter_map(|(filename, a)| {
                 let missing: Vec<[u8; 32]> = a
                     .metadata
@@ -253,6 +252,23 @@ impl FileReassembler {
                 if missing.is_empty() {
                     return None;
                 }
+
+                // Progress-aware: if chunks were recovered since last NACK, reset stall counter
+                let current_missing = missing.len();
+                if a.missing_at_last_nack > 0 && current_missing < a.missing_at_last_nack {
+                    tracing::debug!(
+                        filename,
+                        was = a.missing_at_last_nack,
+                        now = current_missing,
+                        "progress detected, resetting nack stall counter"
+                    );
+                    a.nack_count = 0;
+                }
+
+                if a.nack_count >= summit_core::recovery::MAX_NACK_STALLS {
+                    return None;
+                }
+
                 Some(StalledAssembly {
                     filename: filename.clone(),
                     missing,
@@ -263,11 +279,13 @@ impl FileReassembler {
             .collect()
     }
 
-    /// Mark that a NACK was sent for this assembly.
-    pub async fn increment_nack_count(&self, filename: &str) {
+    /// Mark that a NACK was sent for this assembly, recording how many
+    /// chunks were missing at this point for progress detection.
+    pub async fn increment_nack_count(&self, filename: &str, missing_count: usize) {
         let mut active = self.active.lock().await;
         if let Some(assembly) = active.get_mut(filename) {
             assembly.nack_count += 1;
+            assembly.missing_at_last_nack = missing_count;
         }
     }
 

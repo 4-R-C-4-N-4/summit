@@ -95,6 +95,10 @@ pub mod recovery {
     /// Sender -> Receiver: "I don't have these chunks (cache evicted)."
     /// The receiver should give up on this assembly rather than retrying forever.
     pub const GONE: u16 = 2;
+
+    /// Receiver -> Sender: "Here's my bulk receive capacity."
+    /// Sent post-handshake so the sender can tune its token bucket.
+    pub const CAPACITY: u16 = 3;
 }
 
 // ── Capability Announcement ───────────────────────────────────────────────────

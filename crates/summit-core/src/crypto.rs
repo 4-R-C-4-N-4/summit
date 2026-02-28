@@ -11,7 +11,7 @@
 //! There is no unsafe code in this module.
 
 use rand::RngCore;
-use snow::{Builder, HandshakeState, TransportState};
+use snow::{Builder, HandshakeState, StatelessTransportState};
 use thiserror::Error;
 use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
@@ -203,7 +203,7 @@ impl NoiseInitiator {
 
         let transport = self
             .state
-            .into_transport_mode()
+            .into_stateless_transport_mode()
             .map_err(CryptoError::Noise)?;
         let session_id = derive_session_id(&self.initiator_nonce, responder_nonce);
 
@@ -211,6 +211,8 @@ impl NoiseInitiator {
             Session {
                 session_id,
                 transport,
+                send_nonce: 0,
+                recv_window: ReplayWindow::new(),
             },
             msg3,
         ))
@@ -300,14 +302,92 @@ impl ResponderPending {
 
         let transport = self
             .state
-            .into_transport_mode()
+            .into_stateless_transport_mode()
             .map_err(CryptoError::Noise)?;
         let session_id = derive_session_id(&self.initiator_nonce, &self.responder_nonce);
 
         Ok(Session {
             session_id,
             transport,
+            send_nonce: 0,
+            recv_window: ReplayWindow::new(),
         })
+    }
+}
+
+// ── Replay Window ─────────────────────────────────────────────────────────────
+
+/// Sliding-window replay protection (RFC 6479 style).
+///
+/// Tracks the highest seen nonce and a bitmap of the last 2048 nonces.
+/// Rejects duplicates and nonces that fall behind the window.
+const WINDOW_SIZE: u64 = 2048;
+
+pub struct ReplayWindow {
+    highest: u64,
+    bitmap: Vec<u64>, // 2048 bits = 32 u64s
+}
+
+impl Default for ReplayWindow {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ReplayWindow {
+    pub fn new() -> Self {
+        Self {
+            highest: 0,
+            bitmap: vec![0u64; (WINDOW_SIZE / 64) as usize],
+        }
+    }
+
+    /// Returns true if the nonce is acceptable (not replayed, not too old).
+    pub fn check(&self, nonce: u64) -> bool {
+        if nonce + WINDOW_SIZE < self.highest {
+            return false; // too old
+        }
+        if nonce > self.highest {
+            return true; // ahead of window
+        }
+        let diff = self.highest - nonce;
+        let (word, bit) = ((diff / 64) as usize, (diff % 64) as u32);
+        self.bitmap[word] & (1u64 << bit) == 0
+    }
+
+    /// Mark a nonce as seen. Call after successful decrypt.
+    pub fn mark(&mut self, nonce: u64) {
+        if nonce > self.highest {
+            let shift = nonce - self.highest;
+            self.shift_window(shift);
+            self.highest = nonce;
+        }
+        let diff = self.highest - nonce;
+        let (word, bit) = ((diff / 64) as usize, (diff % 64) as u32);
+        self.bitmap[word] |= 1u64 << bit;
+    }
+
+    fn shift_window(&mut self, shift: u64) {
+        if shift >= WINDOW_SIZE {
+            self.bitmap.fill(0);
+            return;
+        }
+        let word_shift = (shift / 64) as usize;
+        let bit_shift = (shift % 64) as u32;
+        if word_shift > 0 {
+            self.bitmap.rotate_right(word_shift);
+            for w in &mut self.bitmap[..word_shift] {
+                *w = 0;
+            }
+        }
+        if bit_shift > 0 {
+            let len = self.bitmap.len();
+            for i in (1..len).rev() {
+                self.bitmap[i] =
+                    (self.bitmap[i] >> bit_shift) | (self.bitmap[i - 1] << (64 - bit_shift));
+            }
+            self.bitmap[0] >>= bit_shift;
+        }
     }
 }
 
@@ -315,44 +395,67 @@ impl ResponderPending {
 
 /// A completed Noise_XX session, ready for chunk encryption and decryption.
 ///
-/// The session ID is derived from both parties' nonces — neither side
-/// controls it unilaterally. The transport state holds the derived
-/// symmetric keys and manages nonces internally.
+/// Uses StatelessTransportState with explicit nonces — correct for UDP where
+/// packets may be lost, reordered, or retransmitted. Each encrypted packet
+/// carries an 8-byte LE nonce prefix on the wire.
 ///
-/// Session is NOT Sync — snow's TransportState requires exclusive access
-/// per operation. Wrap in Arc<Mutex<Session>> for shared use across tasks.
+/// Wire format per packet:
+///   [u64 nonce LE (8 bytes)] [Noise ciphertext (payload + 16-byte MAC)]
+///
+/// Session is NOT Sync — send_nonce and recv_window require exclusive access.
+/// Wrap in Arc<Mutex<Session>> for shared use across tasks.
 pub struct Session {
-    /// Stable identifier for this session — identical on both sides.
     pub session_id: [u8; 32],
-    /// Noise transport state — holds sending and receiving keys.
-    transport: TransportState,
+    transport: StatelessTransportState,
+    send_nonce: u64,
+    recv_window: ReplayWindow,
 }
 
 impl Session {
-    /// Encrypt plaintext into `out`. Appends a 16-byte Poly1305 MAC.
+    /// Encrypt plaintext into `out`. Prepends an 8-byte LE nonce and appends
+    /// a 16-byte Poly1305 MAC.
     ///
-    /// `out` will be `plaintext.len() + 16` bytes on success.
+    /// `out` will be `8 + plaintext.len() + 16` bytes on success.
     pub fn encrypt(&mut self, plaintext: &[u8], out: &mut Vec<u8>) -> Result<(), CryptoError> {
-        let out_len = plaintext.len() + 16;
-        out.resize(out_len, 0);
+        let nonce = self.send_nonce;
+        self.send_nonce += 1;
+
+        out.clear();
+        out.extend_from_slice(&nonce.to_le_bytes());
+
+        let offset = 8;
+        out.resize(offset + plaintext.len() + 16, 0);
         let written = self
             .transport
-            .write_message(plaintext, out)
+            .write_message(nonce, plaintext, &mut out[offset..])
             .map_err(CryptoError::Noise)?;
-        out.truncate(written);
+        out.truncate(offset + written);
         Ok(())
     }
 
-    /// Decrypt ciphertext into `out`. Verifies the Poly1305 MAC.
+    /// Decrypt ciphertext into `out`. Reads the 8-byte LE nonce prefix,
+    /// checks the replay window, and verifies the Poly1305 MAC.
     ///
-    /// Returns Err if the MAC is invalid — the session should be torn down.
+    /// Returns Err on replay, truncation, or MAC failure.
     pub fn decrypt(&mut self, ciphertext: &[u8], out: &mut Vec<u8>) -> Result<(), CryptoError> {
-        out.resize(ciphertext.len(), 0);
+        if ciphertext.len() < 8 + 16 {
+            return Err(CryptoError::TooShort);
+        }
+
+        let nonce = u64::from_le_bytes(ciphertext[..8].try_into().unwrap());
+
+        if !self.recv_window.check(nonce) {
+            return Err(CryptoError::Replay);
+        }
+
+        out.resize(ciphertext.len() - 8, 0);
         let written = self
             .transport
-            .read_message(ciphertext, out)
+            .read_message(nonce, &ciphertext[8..], out)
             .map_err(CryptoError::Noise)?;
         out.truncate(written);
+
+        self.recv_window.mark(nonce);
         Ok(())
     }
 }
@@ -366,6 +469,12 @@ pub enum CryptoError {
 
     #[error("Noise protocol error: {0}")]
     Noise(#[from] snow::Error),
+
+    #[error("ciphertext too short (need at least 24 bytes: 8 nonce + 16 MAC)")]
+    TooShort,
+
+    #[error("replayed or too-old nonce")]
+    Replay,
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -563,11 +672,132 @@ mod tests {
             .encrypt(b"important data", &mut ct)
             .unwrap();
 
-        // Flip a bit in the ciphertext
-        ct[4] ^= 0xFF;
+        // Flip a bit in the ciphertext body (past the 8-byte nonce prefix)
+        ct[12] ^= 0xFF;
 
         let mut pt = Vec::new();
         let result = responder_session.decrypt(&ct, &mut pt);
         assert!(result.is_err(), "tampered ciphertext should be rejected");
+    }
+
+    // ── ReplayWindow ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn replay_window_accepts_sequential_nonces() {
+        let mut w = ReplayWindow::new();
+        for i in 0..100 {
+            assert!(w.check(i), "nonce {i} should be accepted");
+            w.mark(i);
+        }
+    }
+
+    #[test]
+    fn replay_window_rejects_duplicate() {
+        let mut w = ReplayWindow::new();
+        w.mark(5);
+        assert!(!w.check(5), "duplicate nonce 5 should be rejected");
+    }
+
+    #[test]
+    fn replay_window_rejects_too_old() {
+        let mut w = ReplayWindow::new();
+        w.mark(WINDOW_SIZE + 100);
+        assert!(!w.check(0), "nonce 0 should be too old");
+    }
+
+    #[test]
+    fn replay_window_accepts_within_window() {
+        let mut w = ReplayWindow::new();
+        w.mark(100);
+        // Nonce 50 is within the window (100 - 50 = 50 < 2048)
+        assert!(w.check(50), "nonce 50 should be within window");
+    }
+
+    #[test]
+    fn replay_window_advancement() {
+        let mut w = ReplayWindow::new();
+        // Mark nonces 0..10
+        for i in 0..10 {
+            w.mark(i);
+        }
+        // Jump far ahead
+        w.mark(5000);
+        // Old nonces should now be too old
+        assert!(!w.check(0));
+        // Recent nonce just behind highest is fine
+        assert!(w.check(4999));
+    }
+
+    // ── Explicit nonce transport ─────────────────────────────────────────────
+
+    #[test]
+    fn nonce_prefix_roundtrip() {
+        let (mut i_sess, mut r_sess) = completed_sessions();
+
+        let plaintext = b"explicit nonce test";
+        let mut ct = Vec::new();
+        let mut pt = Vec::new();
+
+        i_sess.encrypt(plaintext, &mut ct).unwrap();
+
+        // Ciphertext should be 8 (nonce) + plaintext.len() + 16 (MAC)
+        assert_eq!(ct.len(), 8 + plaintext.len() + 16);
+
+        // First 8 bytes are the LE nonce (should be 0 for first message)
+        let nonce = u64::from_le_bytes(ct[..8].try_into().unwrap());
+        assert_eq!(nonce, 0);
+
+        r_sess.decrypt(&ct, &mut pt).unwrap();
+        assert_eq!(pt.as_slice(), plaintext.as_slice());
+    }
+
+    #[test]
+    fn out_of_order_decrypt() {
+        let (mut i_sess, mut r_sess) = completed_sessions();
+
+        // Encrypt three messages
+        let mut ct0 = Vec::new();
+        let mut ct1 = Vec::new();
+        let mut ct2 = Vec::new();
+        i_sess.encrypt(b"msg0", &mut ct0).unwrap();
+        i_sess.encrypt(b"msg1", &mut ct1).unwrap();
+        i_sess.encrypt(b"msg2", &mut ct2).unwrap();
+
+        // Decrypt in order 2, 0, 1
+        let mut pt = Vec::new();
+        r_sess.decrypt(&ct2, &mut pt).unwrap();
+        assert_eq!(pt, b"msg2");
+
+        r_sess.decrypt(&ct0, &mut pt).unwrap();
+        assert_eq!(pt, b"msg0");
+
+        r_sess.decrypt(&ct1, &mut pt).unwrap();
+        assert_eq!(pt, b"msg1");
+    }
+
+    #[test]
+    fn replay_rejection_in_session() {
+        let (mut i_sess, mut r_sess) = completed_sessions();
+
+        let mut ct = Vec::new();
+        let mut pt = Vec::new();
+        i_sess.encrypt(b"once only", &mut ct).unwrap();
+
+        // First decrypt succeeds
+        r_sess.decrypt(&ct, &mut pt).unwrap();
+        assert_eq!(pt, b"once only");
+
+        // Second decrypt of same ciphertext is rejected
+        let result = r_sess.decrypt(&ct, &mut pt);
+        assert!(result.is_err(), "replayed ciphertext should be rejected");
+    }
+
+    #[test]
+    fn too_short_ciphertext_rejected() {
+        let (_, mut r_sess) = completed_sessions();
+        let mut pt = Vec::new();
+        // Less than 24 bytes (8 nonce + 16 MAC minimum)
+        let result = r_sess.decrypt(&[0u8; 20], &mut pt);
+        assert!(result.is_err());
     }
 }

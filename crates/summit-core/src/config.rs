@@ -38,6 +38,11 @@ pub struct NetworkConfig {
     pub chunk_port: u16,
     /// HTTP API port for status/control.
     pub api_port: u16,
+    /// Bulk receive capacity (tokens/sec). Advertised to peers.
+    /// Higher = faster file transfers. 0 = use default (128).
+    pub bulk_rate: u32,
+    /// Bulk burst capacity. 0 = use default (64).
+    pub bulk_burst: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -120,6 +125,8 @@ impl Default for NetworkConfig {
             session_port: 0,
             chunk_port: 0,
             api_port: 9001,
+            bulk_rate: 128,
+            bulk_burst: 64,
         }
     }
 }

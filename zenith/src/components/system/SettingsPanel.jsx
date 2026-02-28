@@ -12,6 +12,8 @@ export default function SettingsPanel() {
     if (!config) return;
     setDraft({
       network_interface: config.network?.interface ?? '',
+      bulk_rate: config.network?.bulk_rate ?? 128,
+      bulk_burst: config.network?.bulk_burst ?? 64,
       auto_trust: config.trust?.auto_trust ?? true,
       file_transfer: config.services?.file_transfer ?? true,
       messaging: config.services?.messaging ?? true,
@@ -31,6 +33,8 @@ export default function SettingsPanel() {
   const handleSave = async () => {
     const updates = [
       { section: 'network',                          key: 'interface',           value: draft.network_interface },
+      { section: 'network',                          key: 'bulk_rate',           value: Number(draft.bulk_rate) },
+      { section: 'network',                          key: 'bulk_burst',          value: Number(draft.bulk_burst) },
       { section: 'trust',                            key: 'auto_trust',          value: draft.auto_trust },
       { section: 'services',                         key: 'file_transfer',       value: draft.file_transfer },
       { section: 'services',                         key: 'messaging',           value: draft.messaging },
@@ -74,6 +78,12 @@ export default function SettingsPanel() {
       <SettingsGroup label="Network">
         <Field label="Interface" hint="Leave blank for auto-detect">
           <TextInput value={draft.network_interface} onChange={v => set('network_interface', v)} placeholder="e.g. wlan0" />
+        </Field>
+        <Field label="Bulk rate" hint="Tokens/sec — advertised to peers (0 = 128)">
+          <NumberInput value={draft.bulk_rate} onChange={v => set('bulk_rate', v)} min={0} />
+        </Field>
+        <Field label="Bulk burst" hint="Max burst capacity (0 = 64)">
+          <NumberInput value={draft.bulk_burst} onChange={v => set('bulk_burst', v)} min={0} />
         </Field>
       </SettingsGroup>
 

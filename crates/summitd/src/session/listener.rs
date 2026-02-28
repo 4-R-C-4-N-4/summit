@@ -359,7 +359,7 @@ impl SessionListener {
                     },
                     crypto: Arc::new(Mutex::new(state.session)),
                     socket: state.chunk_socket,
-                    bucket: Mutex::new(TokenBucket::new(Contract::Bulk)),
+                    bucket: Arc::new(Mutex::new(TokenBucket::new(Contract::Bulk))),
                 },
             );
 
@@ -412,7 +412,7 @@ impl SessionListener {
                     },
                     crypto: Arc::new(Mutex::new(state.session)),
                     socket: state.chunk_socket,
-                    bucket: Mutex::new(TokenBucket::new(Contract::Bulk)),
+                    bucket: Arc::new(Mutex::new(TokenBucket::new(Contract::Bulk))),
                 },
             );
 

@@ -90,6 +90,14 @@ impl TokenBucket {
         }
     }
 
+    /// Reconfigure the bucket's rate and burst capacity.
+    /// Used when a peer advertises its receive capacity.
+    pub fn reconfigure(&mut self, rate: f64, burst: f64) {
+        self.refill_rate = rate;
+        self.capacity = burst;
+        self.tokens = self.tokens.min(burst);
+    }
+
     pub fn contract(&self) -> Contract {
         self.contract
     }

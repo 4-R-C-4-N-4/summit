@@ -39,13 +39,29 @@ jobs:
             **Native Linux (from assets below):**
 
             ```bash
-            # x86_64
-            tar xzf summit-x86_64-unknown-linux-gnu.tar.gz
+            # Download and extract (pick your arch)
+            tar xzf summit-x86_64-unknown-linux-gnu.tar.gz   # x86_64
+            # tar xzf summit-aarch64-unknown-linux-gnu.tar.gz # ARM64
+
+            # Install binaries
             sudo mv summitd summit-ctl /usr/local/bin/
 
-            # ARM64
-            tar xzf summit-aarch64-unknown-linux-gnu.tar.gz
-            sudo mv summitd summit-ctl /usr/local/bin/
+            # Install systemd service (runs as your user)
+            mkdir -p ~/.config/systemd/user
+            mv summitd.service ~/.config/systemd/user/
+            systemctl --user daemon-reload
+            systemctl --user enable --now summitd
+            ```
+
+            On first start, summitd generates a default config at `~/.config/summit/config.toml` and a keypair at `~/.config/summit/keypair`.
+
+            **Verify it's running:**
+
+            ```bash
+            systemctl --user status summitd     # service status
+            journalctl --user -u summitd -f     # live logs
+            summit-ctl status                   # daemon status
+            summit-ctl peers                    # discovered peers
             ```
 
             **Docker:**
@@ -65,12 +81,11 @@ jobs:
 
             **Desktop UI:**
 
-            Download `zenith-linux.AppImage`, make executable, and run.
+            Download `zenith-linux.AppImage`, make executable, and run. The UI connects to the daemon at `http://127.0.0.1:9001`.
 
             ### Quick Start
 
             ```bash
-            sudo summitd eth0 &
             summit-ctl status
             summit-ctl peers
             summit-ctl trust add <peer-pubkey>
@@ -78,13 +93,36 @@ jobs:
             summit-ctl messages send <peer-pubkey> "hello"
             ```
 
+            ### Configuration
+
+            Edit `~/.config/summit/config.toml` (or set `SUMMIT_CONFIG` to use a custom path). Changes take effect after restarting the daemon.
+
+            Key environment variable overrides:
+            - `SUMMIT_NETWORK__INTERFACE` — bind to a specific interface
+            - `SUMMIT_TRUST__AUTO_TRUST=true` — auto-trust discovered peers
+            - `RUST_LOG=info` — control log verbosity (`debug`, `trace` for troubleshooting)
+
+            ### Logs
+
+            ```bash
+            # systemd (user service)
+            journalctl --user -u summitd -f
+
+            # systemd with debug logging
+            systemctl --user stop summitd
+            RUST_LOG=debug summitd
+
+            # Docker
+            docker logs -f summitd
+            ```
+
             ### Assets
 
             | File | Description |
             |------|-------------|
-            | `summit-x86_64-unknown-linux-gnu.tar.gz` | summitd + summit-ctl for x86_64 |
-            | `summit-aarch64-unknown-linux-gnu.tar.gz` | summitd + summit-ctl for ARM64 |
-            | `zenith-linux.AppImage` | Desktop UI |
+            | `summit-x86_64-unknown-linux-gnu.tar.gz` | summitd + summit-ctl + systemd service for x86_64 |
+            | `summit-aarch64-unknown-linux-gnu.tar.gz` | summitd + summit-ctl + systemd service for ARM64 |
+            | `zenith-linux.AppImage` | Desktop UI (connects to daemon on port 9001) |
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -156,8 +194,9 @@ jobs:
       - name: Strip and archive
         run: |
           strip target/release/summitd target/release/summit-ctl
+          cp dist/summitd.service target/release/
           tar czf summit-x86_64-unknown-linux-gnu.tar.gz \
-            -C target/release summitd summit-ctl
+            -C target/release summitd summit-ctl summitd.service
 
       - name: Upload to release
         uses: softprops/action-gh-release@v2
@@ -203,8 +242,9 @@ jobs:
 
       - name: Archive
         run: |
+          cp dist/summitd.service target/aarch64-unknown-linux-gnu/release/
           tar czf summit-aarch64-unknown-linux-gnu.tar.gz \
-            -C target/aarch64-unknown-linux-gnu/release summitd summit-ctl
+            -C target/aarch64-unknown-linux-gnu/release summitd summit-ctl summitd.service
 
       - name: Upload to release
         uses: softprops/action-gh-release@v2
