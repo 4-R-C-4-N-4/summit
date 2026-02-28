@@ -89,7 +89,7 @@ pub async fn handle_compute_submit(
 
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_default()
         .as_millis() as u64;
 
     let payload_bytes = serde_json::to_vec(&req.payload)

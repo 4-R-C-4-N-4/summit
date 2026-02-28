@@ -12,7 +12,7 @@ use socket2::{Domain, Protocol, Socket, Type};
 use tokio::net::UdpSocket;
 use zerocopy::FromBytes;
 
-use summit_core::wire::{CapabilityAnnouncement, MULTICAST_ADDR, PEER_TTL_SECS};
+use summit_core::wire::{CapabilityAnnouncement, MULTICAST_ADDR_V6, PEER_TTL_SECS};
 use summit_services::{PeerEntry, PeerRegistry};
 
 /// UDP port on which capability announcements are received.
@@ -126,9 +126,8 @@ fn make_listener_socket(interface_index: u32) -> Result<std::net::UdpSocket> {
     let bind_addr = SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, ANNOUNCE_PORT, 0, 0);
     socket.bind(&bind_addr.into()).context("bind()")?;
 
-    let multicast: Ipv6Addr = MULTICAST_ADDR.parse().unwrap();
     socket
-        .join_multicast_v6(&multicast, interface_index)
+        .join_multicast_v6(&MULTICAST_ADDR_V6, interface_index)
         .context("IPV6_JOIN_GROUP")?;
 
     Ok(socket.into())

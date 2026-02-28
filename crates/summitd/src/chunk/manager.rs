@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use tokio::sync::{broadcast, mpsc};
 
-use summit_core::recovery::{Capacity, Gone};
+use summit_core::recovery::Capacity;
 use summit_core::wire;
 use summit_services::{
     ChunkCache, FileReassembler, OutgoingChunk, SendTarget, SessionTable, TrustLevel,
@@ -132,6 +132,8 @@ impl ChunkManager {
             // Create channel for received chunks
             let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::channel::<super::IncomingChunk>(100);
 
+            let reassembler_for_handler = reassembler.clone();
+
             // Spawn receiver handler (processes chunks, feeds reassembler)
             tokio::spawn(async move {
                 while let Some(chunk) = chunk_rx.recv().await {
@@ -171,35 +173,21 @@ impl ChunkManager {
                         "chunk received"
                     );
 
-                    // Handle GONE — sender can't provide these chunks
-                    if chunk.schema_id == wire::recovery_hash()
-                        && chunk.type_tag == wire::recovery::GONE
-                    {
-                        if let Ok(gone) = serde_json::from_slice::<Gone>(&chunk.payload) {
-                            let stalled = reassembler.missing_chunks().await;
-                            for (filename, missing) in stalled {
-                                let any_gone = missing.iter().any(|h| gone.hashes.contains(h));
-                                if any_gone {
-                                    reassembler.abandon(&filename).await;
-                                }
-                            }
-                        }
-                        continue;
-                    }
-
                     // Handle file metadata chunks (type_tag 3)
                     if chunk.type_tag == 3 {
                         if let Ok(metadata) =
                             serde_json::from_slice::<summit_services::FileMetadata>(&chunk.payload)
                         {
                             tracing::info!(filename = %metadata.filename, chunks = metadata.chunk_hashes.len(), "file transfer started");
-                            reassembler.add_metadata(metadata, peer_pubkey).await;
+                            reassembler_for_handler
+                                .add_metadata(metadata, peer_pubkey)
+                                .await;
                         }
                     }
 
                     // Handle file data chunks (type_tag 2)
                     if chunk.type_tag == 2 {
-                        if let Ok(Some(path)) = reassembler
+                        if let Ok(Some(path)) = reassembler_for_handler
                             .add_chunk(chunk.content_hash, chunk.payload)
                             .await
                         {
@@ -225,6 +213,7 @@ impl ChunkManager {
                     dispatcher,
                     peer_pubkey,
                     bucket,
+                    reassembler,
                 )
                 .await
                 {

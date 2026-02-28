@@ -4,7 +4,7 @@
 //! to the link-local multicast address ff02::1. Receivers accumulate by
 //! public_key to build each peer's full service set.
 
-use std::net::{Ipv6Addr, SocketAddrV6};
+use std::net::SocketAddrV6;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,7 +13,7 @@ use socket2::{Domain, Protocol, Socket, Type};
 use zerocopy::AsBytes;
 
 use summit_core::crypto::Keypair;
-use summit_core::wire::{CapabilityAnnouncement, Contract, ServiceHash, MULTICAST_ADDR};
+use summit_core::wire::{CapabilityAnnouncement, Contract, ServiceHash, MULTICAST_ADDR_V6};
 
 /// One service to announce, with its contract and optional dedicated port.
 #[derive(Debug, Clone)]
@@ -45,8 +45,7 @@ pub async fn broadcast_loop(
     let interval_secs = summit_core::wire::ANNOUNCE_INTERVAL_SECS;
     let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
 
-    let multicast: Ipv6Addr = MULTICAST_ADDR.parse().unwrap();
-    let dest = SocketAddrV6::new(multicast, 9000, 0, interface_index);
+    let dest = SocketAddrV6::new(MULTICAST_ADDR_V6, 9000, 0, interface_index);
 
     let service_count = services.len() as u8;
 

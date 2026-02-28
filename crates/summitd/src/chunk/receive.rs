@@ -10,7 +10,9 @@ use zerocopy::FromBytes;
 use summit_core::crypto::{hash, Session};
 use summit_core::recovery::{Capacity, Gone, Nack};
 use summit_core::wire::{self, ChunkHeader, MAX_UDP_BUF};
-use summit_services::{ChunkCache, KnownSchema, OutgoingChunk, SendTarget, TokenBucket};
+use summit_services::{
+    ChunkCache, FileReassembler, KnownSchema, OutgoingChunk, SendTarget, TokenBucket,
+};
 
 /// How long to wait for data before considering the session dead.
 const RECEIVE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -32,6 +34,7 @@ pub async fn receive_loop(
     dispatcher: Arc<ServiceDispatcher>,
     peer_pubkey: [u8; 32],
     bucket: Arc<Mutex<TokenBucket>>,
+    reassembler: Arc<FileReassembler>,
 ) -> Result<()> {
     let mut buf = vec![0u8; MAX_UDP_BUF];
 
@@ -131,6 +134,7 @@ pub async fn receive_loop(
                     &cache,
                     &outbound_tx,
                     &bucket,
+                    &reassembler,
                 )
                 .await;
                 continue;
@@ -163,6 +167,7 @@ async fn handle_recovery(
     cache: &ChunkCache,
     chunk_tx: &mpsc::Sender<(SendTarget, OutgoingChunk)>,
     bucket: &Arc<Mutex<TokenBucket>>,
+    reassembler: &Arc<FileReassembler>,
 ) {
     let type_tag = header.type_tag;
     match type_tag {
@@ -252,12 +257,25 @@ async fn handle_recovery(
         }
 
         wire::recovery::GONE => {
-            // GONE is handled by the chunk manager (receiver side).
-            // It arrives here via the general chunk channel.
-            tracing::debug!(
+            let gone: Gone = match serde_json::from_slice(payload) {
+                Ok(g) => g,
+                Err(e) => {
+                    tracing::warn!(error = %e, "invalid GONE payload");
+                    return;
+                }
+            };
+            tracing::info!(
                 peer = hex::encode(&peer_pubkey[..8]),
-                "GONE received — forwarded via chunk channel"
+                hashes = gone.hashes.len(),
+                "GONE received — checking assemblies"
             );
+            let stalled = reassembler.missing_chunks().await;
+            for (filename, missing) in stalled {
+                let any_gone = missing.iter().any(|h| gone.hashes.contains(h));
+                if any_gone {
+                    reassembler.abandon(&filename).await;
+                }
+            }
         }
 
         wire::recovery::CAPACITY => {

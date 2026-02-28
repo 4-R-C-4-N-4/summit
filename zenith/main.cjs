@@ -28,7 +28,7 @@ function createWindow() {
     },
     autoHideMenuBar: true,
     icon: path.join(__dirname, 'assets/tray-icon.png'),
-    title: '4str4l',
+    title: 'Zenith',
     show: false
   });
 
@@ -89,12 +89,12 @@ function createTray() {
 
     const contextMenu = Menu.buildFromTemplate([
       {
-        label: 'Show Summit',
+        label: 'Show Zenith',
         click: () => mainWindow.show()
       },
       { type: 'separator' },
       {
-        label: 'Quit Summit',
+        label: 'Quit Zenith',
         click: () => {
           app.isQuitting = true;
           app.quit();

@@ -267,8 +267,12 @@ pub const MAC_SIZE: usize = 16;
 /// Rounded up to 65632 for alignment.
 pub const MAX_UDP_BUF: usize = NONCE_SIZE + HEADER_SIZE + MAX_PAYLOAD + MAC_SIZE + 1;
 
-/// IPv6 link-local multicast address for capability announcements.
+/// IPv6 link-local multicast address for capability announcements (string form).
 pub const MULTICAST_ADDR: &str = "ff02::1";
+
+/// Pre-parsed multicast address — avoids runtime `.parse().unwrap()`.
+pub const MULTICAST_ADDR_V6: std::net::Ipv6Addr =
+    std::net::Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1);
 
 /// Default capability announcement interval in seconds.
 pub const ANNOUNCE_INTERVAL_SECS: u64 = 2;

@@ -287,7 +287,7 @@ impl FileReassembler {
     pub async fn increment_nack_count(&self, filename: &str, missing_count: usize) {
         let mut active = self.active.lock().await;
         if let Some(assembly) = active.get_mut(filename) {
-            assembly.nack_count += 1;
+            assembly.nack_count = assembly.nack_count.saturating_add(1);
             assembly.missing_at_last_nack = missing_count;
         }
     }

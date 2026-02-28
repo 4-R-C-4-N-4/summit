@@ -76,12 +76,13 @@ pub async fn handle_send_message(
 
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_default()
         .as_millis() as u64;
 
     let payload_value = serde_json::json!({ "text": req.text });
 
-    let payload_bytes = serde_json::to_vec(&payload_value).unwrap();
+    let payload_bytes = serde_json::to_vec(&payload_value)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let msg_id = {
         let mut h = blake3::Hasher::new();
         h.update(&from);

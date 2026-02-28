@@ -20,7 +20,7 @@ pub async fn serve(state: ApiState, port: u16) -> anyhow::Result<()> {
         .route("/cache/clear", post(handlers::handle_cache_clear))
         .route(
             "/send",
-            post(handlers::handle_send).layer(DefaultBodyLimit::max(512 * 1024 * 1024)),
+            post(handlers::handle_send).layer(DefaultBodyLimit::max(256 * 1024 * 1024)),
         )
         .route("/files", get(handlers::handle_files))
         .route("/trust", get(handlers::handle_trust_list))

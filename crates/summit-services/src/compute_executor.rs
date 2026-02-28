@@ -160,6 +160,15 @@ pub async fn run(
                     "compute task finished"
                 );
 
+                // Clean up task directory now that output files have been sent
+                if let Err(e) = tokio::fs::remove_dir_all(&task_dir).await {
+                    tracing::debug!(
+                        path = %task_dir.display(),
+                        error = %e,
+                        "failed to clean up task directory"
+                    );
+                }
+
                 drop(permit);
             });
         }
