@@ -23,7 +23,7 @@ impl KnownSchema {
         let file_chunk_id = summit_core::crypto::hash(b"summit.file.chunk");
         let file_data_id = summit_core::crypto::hash(b"summit.file.data");
         let file_metadata_id = summit_core::crypto::hash(b"summit.file.metadata");
-        let message_id = summit_core::crypto::hash(b"summit.message");
+        let message_id = summit_core::wire::messaging_hash();
         let compute_id = summit_core::wire::compute_hash();
         let recovery_id = summit_core::wire::recovery_hash();
 
@@ -83,7 +83,7 @@ impl KnownSchema {
             Self::FileChunk => summit_core::crypto::hash(b"summit.file.chunk"),
             Self::FileData => summit_core::crypto::hash(b"summit.file.data"),
             Self::FileMetadata => summit_core::crypto::hash(b"summit.file.metadata"),
-            Self::Message => summit_core::crypto::hash(b"summit.message"),
+            Self::Message => summit_core::wire::messaging_hash(),
             Self::ComputeTask => summit_core::wire::compute_hash(),
             Self::Recovery => summit_core::wire::recovery_hash(),
         }
@@ -96,7 +96,7 @@ impl KnownSchema {
             Self::FileChunk => "summit.file.chunk",
             Self::FileData => "summit.file.data",
             Self::FileMetadata => "summit.file.metadata",
-            Self::Message => "summit.message",
+            Self::Message => "summit.messaging",
             Self::ComputeTask => "summit.compute",
             Self::Recovery => "summit.recovery",
         }

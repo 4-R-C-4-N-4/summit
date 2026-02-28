@@ -331,7 +331,7 @@ impl ChunkService for FileReassembler {
         peer_pubkey: &[u8; 32],
         header: &ChunkHeader,
         payload: &[u8],
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    ) -> anyhow::Result<()> {
         let data = Bytes::copy_from_slice(payload);
         let content_hash = header.content_hash;
         let type_tag = header.type_tag;

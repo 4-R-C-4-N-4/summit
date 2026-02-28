@@ -250,6 +250,23 @@ pub const CHUNK_VERSION: u8 = 0x01;
 /// Larger data must be split by the sender into multiple chunks.
 pub const MAX_PAYLOAD: usize = 65535;
 
+/// Size of the ChunkHeader in bytes (`#[repr(C, packed)]`).
+pub const HEADER_SIZE: usize = 72;
+
+/// Nonce prefix size (u64 LE) prepended to every encrypted packet.
+pub const NONCE_SIZE: usize = 8;
+
+/// Poly1305 MAC appended by Noise encryption.
+pub const MAC_SIZE: usize = 16;
+
+/// Maximum UDP receive buffer size.
+///
+/// Fits the largest possible encrypted chunk:
+///   NONCE_SIZE(8) + HEADER_SIZE(72) + MAX_PAYLOAD(65535) + MAC_SIZE(16) = 65631
+///
+/// Rounded up to 65632 for alignment.
+pub const MAX_UDP_BUF: usize = NONCE_SIZE + HEADER_SIZE + MAX_PAYLOAD + MAC_SIZE + 1;
+
 /// IPv6 link-local multicast address for capability announcements.
 pub const MULTICAST_ADDR: &str = "ff02::1";
 

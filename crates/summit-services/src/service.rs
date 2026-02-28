@@ -4,6 +4,7 @@
 //! contract between the daemon (which receives/sends chunks) and
 //! the service logic (which interprets them).
 
+use anyhow::Result;
 use summit_core::wire::{ChunkHeader, Contract, ServiceHash};
 
 /// Trait for services that process incoming chunks and produce outgoing chunks.
@@ -32,5 +33,5 @@ pub trait ChunkService: Send + Sync {
         peer_pubkey: &[u8; 32],
         header: &ChunkHeader,
         payload: &[u8],
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    ) -> Result<()>;
 }

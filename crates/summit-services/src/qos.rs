@@ -98,6 +98,14 @@ impl TokenBucket {
         self.tokens = self.tokens.min(burst);
     }
 
+    /// Returns true if a chunk with the given contract should be suppressed
+    /// because a higher-priority contract is active globally.
+    ///
+    /// Rule: Background traffic is suppressed when any Realtime session exists.
+    pub fn should_suppress(contract: Contract, has_realtime: bool) -> bool {
+        has_realtime && matches!(contract, Contract::Background)
+    }
+
     pub fn contract(&self) -> Contract {
         self.contract
     }

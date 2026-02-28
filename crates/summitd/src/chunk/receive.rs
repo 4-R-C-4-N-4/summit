@@ -9,7 +9,7 @@ use zerocopy::FromBytes;
 
 use summit_core::crypto::{hash, Session};
 use summit_core::recovery::{Capacity, Gone, Nack};
-use summit_core::wire::{self, ChunkHeader};
+use summit_core::wire::{self, ChunkHeader, MAX_UDP_BUF};
 use summit_services::{ChunkCache, KnownSchema, OutgoingChunk, SendTarget, TokenBucket};
 
 /// How long to wait for data before considering the session dead.
@@ -33,9 +33,7 @@ pub async fn receive_loop(
     peer_pubkey: [u8; 32],
     bucket: Arc<Mutex<TokenBucket>>,
 ) -> Result<()> {
-    // Buffer must fit: 8 nonce + 72 header + MAX_PAYLOAD(65535) + 16 MAC = 65631
-    // Current 66560 is sufficient.
-    let mut buf = vec![0u8; 65536 + 1024];
+    let mut buf = vec![0u8; MAX_UDP_BUF];
 
     loop {
         let (len, _peer) =

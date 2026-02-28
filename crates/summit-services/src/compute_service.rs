@@ -98,14 +98,14 @@ impl ChunkService for ComputeService {
         peer_pubkey: &[u8; 32],
         _header: &ChunkHeader,
         payload: &[u8],
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let envelope: ComputeEnvelope =
-            serde_json::from_slice(payload).map_err(|e| format!("invalid compute JSON: {e}"))?;
+    ) -> anyhow::Result<()> {
+        let envelope: ComputeEnvelope = serde_json::from_slice(payload)
+            .map_err(|e| anyhow::anyhow!("invalid compute JSON: {e}"))?;
 
         match envelope.msg_type.as_str() {
             msg_types::TASK_SUBMIT => {
                 let submit: TaskSubmit = serde_json::from_value(envelope.payload)
-                    .map_err(|e| format!("invalid task_submit payload: {e}"))?;
+                    .map_err(|e| anyhow::anyhow!("invalid task_submit payload: {e}"))?;
                 tracing::info!(
                     task_id = &submit.task_id[..16.min(submit.task_id.len())],
                     peer = hex::encode(&peer_pubkey[..8]),
@@ -118,7 +118,7 @@ impl ChunkService for ComputeService {
             }
             msg_types::TASK_ACK => {
                 let ack: TaskAck = serde_json::from_value(envelope.payload)
-                    .map_err(|e| format!("invalid task_ack payload: {e}"))?;
+                    .map_err(|e| anyhow::anyhow!("invalid task_ack payload: {e}"))?;
                 tracing::info!(
                     task_id = &ack.task_id[..16.min(ack.task_id.len())],
                     status = ?ack.status,
@@ -129,7 +129,7 @@ impl ChunkService for ComputeService {
             msg_types::TASK_RESULT => {
                 let result: crate::compute_types::TaskResult =
                     serde_json::from_value(envelope.payload)
-                        .map_err(|e| format!("invalid task_result payload: {e}"))?;
+                        .map_err(|e| anyhow::anyhow!("invalid task_result payload: {e}"))?;
                 tracing::info!(
                     task_id = &result.task_id[..16.min(result.task_id.len())],
                     elapsed_ms = result.elapsed_ms,
@@ -142,7 +142,7 @@ impl ChunkService for ComputeService {
                     .payload
                     .get("task_id")
                     .and_then(|v| v.as_str())
-                    .ok_or("task_cancel missing task_id")?;
+                    .ok_or_else(|| anyhow::anyhow!("task_cancel missing task_id"))?;
                 tracing::info!(
                     task_id = &task_id[..16.min(task_id.len())],
                     "compute task_cancel received"

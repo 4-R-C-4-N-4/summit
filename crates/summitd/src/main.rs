@@ -85,7 +85,8 @@ async fn main() -> Result<()> {
     tracing::info!(root = %cache_root, "chunk cache initialized");
 
     // Trust
-    let trust_registry = TrustRegistry::new();
+    let trust_path = summit_core::config::data_dir().join("trust.json");
+    let trust_registry = TrustRegistry::with_persistence(trust_path);
     trust_registry.apply_config(config.trust.auto_trust, &config.trust.trusted_peers);
     if config.trust.auto_trust {
         tracing::warn!("auto-trust enabled — all discovered peers will be trusted");

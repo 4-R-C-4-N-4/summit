@@ -4,7 +4,9 @@
 use tokio::sync::{broadcast, mpsc};
 
 use summit_core::wire::Contract;
-use summit_services::{ChunkCache, SendTarget, SessionTable, TrustLevel, TrustRegistry};
+use summit_services::{
+    ChunkCache, SendTarget, SessionTable, TokenBucket, TrustLevel, TrustRegistry,
+};
 
 use super::OutgoingChunk;
 
@@ -84,7 +86,6 @@ impl SendWorker {
             return;
         }
 
-        // Priority check
         let has_realtime = self
             .sessions
             .iter()
@@ -103,8 +104,7 @@ impl SendWorker {
             let crypto = session.value().crypto.clone();
             let contract = session.meta.primary_contract();
 
-            // Drop Background if Realtime is active
-            if has_realtime && matches!(contract, Contract::Background) {
+            if TokenBucket::should_suppress(contract, has_realtime) {
                 tracing::debug!(%peer_addr, "background chunk suppressed — realtime active");
                 continue;
             }

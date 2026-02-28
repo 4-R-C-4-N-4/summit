@@ -12,6 +12,8 @@
 use bytes::Bytes;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Trust level for a peer, keyed by their public key.
@@ -28,9 +30,14 @@ pub enum TrustLevel {
 }
 
 /// Registry of trusted/blocked peers.
+///
+/// When constructed with a `persist_path`, trust rules are written to disk
+/// on every mutation and reloaded on startup. This ensures runtime trust
+/// changes (via the API) survive daemon restarts.
 pub struct TrustRegistry {
     rules: Arc<DashMap<[u8; 32], TrustLevel>>,
     auto_trust: Arc<std::sync::atomic::AtomicBool>,
+    persist_path: Arc<Option<PathBuf>>,
 }
 
 impl Default for TrustRegistry {
@@ -44,7 +51,20 @@ impl TrustRegistry {
         Self {
             rules: Arc::new(DashMap::new()),
             auto_trust: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            persist_path: Arc::new(None),
         }
+    }
+
+    /// Create a registry that persists rules to the given file path.
+    /// Loads existing rules from disk if the file exists.
+    pub fn with_persistence(path: PathBuf) -> Self {
+        let registry = Self {
+            rules: Arc::new(DashMap::new()),
+            auto_trust: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            persist_path: Arc::new(Some(path)),
+        };
+        registry.load_from_disk();
+        registry
     }
 
     /// Apply config: auto-trust setting and pre-trusted peer keys.
@@ -57,7 +77,8 @@ impl TrustRegistry {
                 if bytes.len() == 32 {
                     let mut key = [0u8; 32];
                     key.copy_from_slice(&bytes);
-                    self.trust(key);
+                    // Insert directly without re-persisting config-sourced rules
+                    self.rules.insert(key, TrustLevel::Trusted);
                     tracing::info!(
                         peer = &hex_key[..16.min(hex_key.len())],
                         "pre-trusted peer from config"
@@ -103,18 +124,21 @@ impl TrustRegistry {
     /// Mark a peer as trusted. Flushes any buffered chunks for processing.
     pub fn trust(&self, public_key: [u8; 32]) {
         self.rules.insert(public_key, TrustLevel::Trusted);
+        self.save_to_disk();
         tracing::info!(peer = hex::encode(public_key), "peer trusted");
     }
 
     /// Mark a peer as blocked. Existing sessions will be dropped.
     pub fn block(&self, public_key: [u8; 32]) {
         self.rules.insert(public_key, TrustLevel::Blocked);
+        self.save_to_disk();
         tracing::info!(peer = hex::encode(public_key), "peer blocked");
     }
 
     /// Remove trust rule, reverting to default (Untrusted).
     pub fn remove(&self, public_key: &[u8; 32]) {
         self.rules.remove(public_key);
+        self.save_to_disk();
     }
 
     /// List all peers with explicit trust rules.
@@ -143,11 +167,86 @@ impl TrustRegistry {
     }
 }
 
+impl TrustRegistry {
+    /// Serialize all rules to disk as JSON. Best-effort — logs on failure.
+    fn save_to_disk(&self) {
+        let path = match self.persist_path.as_ref() {
+            Some(p) => p,
+            None => return,
+        };
+        let snapshot: HashMap<String, String> = self
+            .rules
+            .iter()
+            .map(|entry| {
+                let level = match *entry.value() {
+                    TrustLevel::Trusted => "trusted",
+                    TrustLevel::Blocked => "blocked",
+                    TrustLevel::Untrusted => "untrusted",
+                };
+                (hex::encode(entry.key()), level.to_string())
+            })
+            .collect();
+        match serde_json::to_string_pretty(&snapshot) {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(path, json) {
+                    tracing::warn!(error = %e, path = %path.display(), "failed to persist trust rules");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to serialize trust rules");
+            }
+        }
+    }
+
+    /// Load rules from disk. Called once during construction.
+    fn load_from_disk(&self) {
+        let path = match self.persist_path.as_ref() {
+            Some(p) => p,
+            None => return,
+        };
+        let text = match std::fs::read_to_string(path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+            Err(e) => {
+                tracing::warn!(error = %e, path = %path.display(), "failed to read trust rules");
+                return;
+            }
+        };
+        let map: HashMap<String, String> = match serde_json::from_str(&text) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!(error = %e, path = %path.display(), "failed to parse trust rules");
+                return;
+            }
+        };
+        let mut loaded = 0usize;
+        for (hex_key, level_str) in &map {
+            if let Ok(bytes) = hex::decode(hex_key) {
+                if bytes.len() == 32 {
+                    let mut key = [0u8; 32];
+                    key.copy_from_slice(&bytes);
+                    let level = match level_str.as_str() {
+                        "trusted" => TrustLevel::Trusted,
+                        "blocked" => TrustLevel::Blocked,
+                        _ => TrustLevel::Untrusted,
+                    };
+                    self.rules.insert(key, level);
+                    loaded += 1;
+                }
+            }
+        }
+        if loaded > 0 {
+            tracing::info!(count = loaded, path = %path.display(), "loaded persisted trust rules");
+        }
+    }
+}
+
 impl Clone for TrustRegistry {
     fn clone(&self) -> Self {
         Self {
             rules: self.rules.clone(),
             auto_trust: self.auto_trust.clone(),
+            persist_path: self.persist_path.clone(),
         }
     }
 }
@@ -338,5 +437,36 @@ mod tests {
 
         buf.clear(&peer);
         assert_eq!(buf.count(&peer), 0);
+    }
+
+    #[test]
+    fn trust_persists_to_disk_and_reloads() {
+        let tmp = std::env::temp_dir().join(format!("summit-trust-test-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let path = tmp.join("trust.json");
+
+        // Create registry, add rules
+        {
+            let reg = TrustRegistry::with_persistence(path.clone());
+            reg.trust([1u8; 32]);
+            reg.block([2u8; 32]);
+        }
+
+        // File should exist
+        assert!(path.exists());
+
+        // Create new registry from same file — rules should reload
+        let reg2 = TrustRegistry::with_persistence(path.clone());
+        assert_eq!(reg2.check(&[1u8; 32]), TrustLevel::Trusted);
+        assert_eq!(reg2.check(&[2u8; 32]), TrustLevel::Blocked);
+        assert_eq!(reg2.check(&[3u8; 32]), TrustLevel::Untrusted);
+
+        // Remove a rule — should persist
+        reg2.remove(&[1u8; 32]);
+        let reg3 = TrustRegistry::with_persistence(path);
+        assert_eq!(reg3.check(&[1u8; 32]), TrustLevel::Untrusted);
+        assert_eq!(reg3.check(&[2u8; 32]), TrustLevel::Blocked);
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
