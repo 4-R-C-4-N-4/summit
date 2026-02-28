@@ -35,6 +35,8 @@ pub struct ApiState {
     pub enabled_services: Vec<String>,
     /// Channel to replay buffered chunks when a peer becomes trusted.
     pub replay_tx: tokio::sync::mpsc::UnboundedSender<([u8; 32], BufferedChunk)>,
+    /// Shutdown broadcast sender — signals graceful daemon shutdown.
+    pub shutdown_tx: tokio::sync::broadcast::Sender<()>,
 }
 
 // ── Shared helpers ────────────────────────────────────────────────────────────

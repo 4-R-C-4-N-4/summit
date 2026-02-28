@@ -47,8 +47,8 @@ pub async fn serve(state: ApiState, port: u16) -> anyhow::Result<()> {
 
     let app = Router::new().nest("/api", api_routes).layer(cors);
 
-    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
-    tracing::info!(port, "status endpoint listening");
+    let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", port)).await?;
+    tracing::info!(port, "API listening on 127.0.0.1");
     axum::serve(listener, app).await?;
     Ok(())
 }

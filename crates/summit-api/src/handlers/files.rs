@@ -78,6 +78,9 @@ pub async fn handle_send(
     let chunks = summit_services::chunk_file(&temp_path)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
+    // Clean up temp file immediately after chunking
+    let _ = std::fs::remove_file(&temp_path);
+
     let bytes = file_data.len() as u64;
     let chunks_sent = chunks.len();
 

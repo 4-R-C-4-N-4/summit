@@ -67,9 +67,47 @@ async fn main() -> Result<()> {
     );
     let session_listen_port = session_listen_socket.local_addr()?.port();
 
-    // Keypair
-    let keypair = Arc::new(Keypair::generate());
-    tracing::info!(public_key = hex::encode(keypair.public), "keypair ready");
+    // Keypair — load from disk or generate and persist
+    let keypair_path = &config.identity.keypair_path;
+    let keypair = if keypair_path.exists() {
+        let bytes = std::fs::read(keypair_path)
+            .with_context(|| format!("failed to read keypair from {}", keypair_path.display()))?;
+        if bytes.len() != 32 {
+            anyhow::bail!(
+                "keypair file {} has wrong size ({} bytes, expected 32)",
+                keypair_path.display(),
+                bytes.len()
+            );
+        }
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&bytes);
+        let kp = Keypair::from_private(key);
+        tracing::info!(
+            public_key = hex::encode(kp.public),
+            path = %keypair_path.display(),
+            "loaded keypair from disk"
+        );
+        Arc::new(kp)
+    } else {
+        let kp = Keypair::generate();
+        if let Some(parent) = keypair_path.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        std::fs::write(keypair_path, &*kp.private_bytes())
+            .with_context(|| format!("failed to save keypair to {}", keypair_path.display()))?;
+        // Set restrictive permissions on the keypair file
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(keypair_path, std::fs::Permissions::from_mode(0o600)).ok();
+        }
+        tracing::info!(
+            public_key = hex::encode(kp.public),
+            path = %keypair_path.display(),
+            "generated and saved new keypair"
+        );
+        Arc::new(kp)
+    };
 
     // Shared state
     let registry = new_registry();
@@ -325,6 +363,7 @@ async fn main() -> Result<()> {
             file_transfer_path,
             enabled_services,
             replay_tx,
+            shutdown_tx: shutdown_tx.clone(),
         };
         tokio::spawn(async move {
             if let Err(e) = summit_api::serve(state, status_port).await {
@@ -334,7 +373,6 @@ async fn main() -> Result<()> {
 
         // Replay task: dispatches buffered chunks from newly-trusted peers
         let replay_dispatcher = dispatcher.clone();
-        let replay_reassembler = reassembler.clone();
         tokio::spawn(async move {
             while let Some((peer_pubkey, chunk)) = replay_rx.recv().await {
                 tracing::info!(
@@ -344,26 +382,8 @@ async fn main() -> Result<()> {
                     "replaying buffered chunk from newly-trusted peer"
                 );
 
-                // Handle file metadata chunks (type_tag 3)
-                if chunk.type_tag == 3 {
-                    if let Ok(metadata) =
-                        serde_json::from_slice::<summit_services::FileMetadata>(&chunk.payload)
-                    {
-                        replay_reassembler.add_metadata(metadata, peer_pubkey).await;
-                    }
-                }
-
-                // Handle file data chunks (type_tag 2)
-                if chunk.type_tag == 2 {
-                    if let Ok(Some(path)) = replay_reassembler
-                        .add_chunk(chunk.content_hash, chunk.payload.clone())
-                        .await
-                    {
-                        tracing::info!(path = %path.display(), "file completed from replay");
-                    }
-                }
-
-                // Dispatch to service dispatcher for all other services
+                // Dispatch to service dispatcher (handles file transfer,
+                // messaging, compute, etc. — no manual type_tag branching needed)
                 let header = summit_core::wire::ChunkHeader {
                     content_hash: chunk.content_hash,
                     schema_id: chunk.schema_id,

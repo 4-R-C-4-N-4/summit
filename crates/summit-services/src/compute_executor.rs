@@ -37,9 +37,19 @@ pub async fn run(
         settings.max_concurrent_tasks as usize
     };
 
+    let task_timeout = Duration::from_secs(if settings.task_timeout_secs == 0 {
+        300
+    } else {
+        settings.task_timeout_secs
+    });
+
     let semaphore = Arc::new(Semaphore::new(max_tasks));
 
-    tracing::info!(max_concurrent = max_tasks, "compute executor started");
+    tracing::info!(
+        max_concurrent = max_tasks,
+        timeout_secs = task_timeout.as_secs(),
+        "compute executor started"
+    );
 
     let mut interval = tokio::time::interval(Duration::from_secs(1));
 
@@ -71,7 +81,15 @@ pub async fn run(
                 send_ack(&chunk_tx, &peer_pubkey, &task_id, TaskStatus::Running).await;
 
                 let start = Instant::now();
-                let result_value = execute_task(&task.submit.payload, &task_dir).await;
+                let result_value = match tokio::time::timeout(
+                    task_timeout,
+                    execute_task(&task.submit.payload, &task_dir),
+                )
+                .await
+                {
+                    Ok(r) => r,
+                    Err(_) => Err(format!("task timed out after {}s", task_timeout.as_secs())),
+                };
                 let elapsed_ms = start.elapsed().as_millis() as u64;
 
                 let (status, mut result_json) = match result_value {

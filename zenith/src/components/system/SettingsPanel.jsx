@@ -25,6 +25,7 @@ export default function SettingsPanel() {
       compute_work_dir: config.services?.compute_settings?.work_dir ?? '/tmp/summit-compute',
       compute_max_tasks: config.services?.compute_settings?.max_concurrent_tasks ?? 0,
       compute_max_cores: config.services?.compute_settings?.max_cpu_cores ?? 0,
+      compute_timeout: config.services?.compute_settings?.task_timeout_secs ?? 300,
     });
   }, [config]);
 
@@ -46,6 +47,7 @@ export default function SettingsPanel() {
       { section: 'services.compute_settings',        key: 'work_dir',            value: draft.compute_work_dir },
       { section: 'services.compute_settings',        key: 'max_concurrent_tasks', value: Number(draft.compute_max_tasks) },
       { section: 'services.compute_settings',        key: 'max_cpu_cores',       value: Number(draft.compute_max_cores) },
+      { section: 'services.compute_settings',        key: 'task_timeout_secs',   value: Number(draft.compute_timeout) },
     ];
     const result = await save(updates);
     if (result.ok) {
@@ -142,6 +144,9 @@ export default function SettingsPanel() {
           </Field>
           <Field label="Max CPU cores" hint="0 = all cores">
             <NumberInput value={draft.compute_max_cores} onChange={v => set('compute_max_cores', v)} min={0} />
+          </Field>
+          <Field label="Task timeout" hint="Seconds per task (0 = 300)">
+            <NumberInput value={draft.compute_timeout} onChange={v => set('compute_timeout', v)} min={0} />
           </Field>
         </SettingsGroup>
       )}

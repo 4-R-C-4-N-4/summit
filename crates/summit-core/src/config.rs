@@ -95,6 +95,8 @@ pub struct ComputeSettings {
     pub max_cpu_cores: u32,
     /// Max memory bytes. 0 = 80% of system.
     pub max_memory_bytes: u64,
+    /// Per-task timeout in seconds. 0 = 300 (5 minutes).
+    pub task_timeout_secs: u64,
 }
 
 // ── Defaults ──────────────────────────────────────────────────────────────────
@@ -179,6 +181,7 @@ impl Default for ComputeSettings {
             max_concurrent_tasks: 0,
             max_cpu_cores: 0,
             max_memory_bytes: 0,
+            task_timeout_secs: 300,
         }
     }
 }

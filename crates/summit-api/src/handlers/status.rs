@@ -225,13 +225,9 @@ pub struct ShutdownResponse {
     pub message: String,
 }
 
-pub async fn handle_shutdown() -> Json<ShutdownResponse> {
+pub async fn handle_shutdown(State(state): State<ApiState>) -> Json<ShutdownResponse> {
     tracing::info!("shutdown requested via API");
-
-    tokio::spawn(async {
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        std::process::exit(0);
-    });
+    let _ = state.shutdown_tx.send(());
 
     Json(ShutdownResponse {
         message: "Shutdown initiated".to_string(),

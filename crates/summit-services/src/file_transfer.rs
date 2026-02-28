@@ -113,6 +113,9 @@ impl FileReassembler {
     /// `sender_pubkey` is the peer that sent the metadata, used for targeted
     /// NACK recovery (attempt 0 goes to the original sender).
     pub async fn add_metadata(&self, metadata: FileMetadata, sender_pubkey: [u8; 32]) {
+        let mut metadata = metadata;
+        metadata.filename = sanitize_filename(&metadata.filename);
+
         let mut active = self.active.lock().await;
         Self::cleanup_stale(&mut active);
         let now = Instant::now();
@@ -353,6 +356,32 @@ impl ChunkService for FileReassembler {
         });
 
         Ok(())
+    }
+}
+
+/// Sanitize a filename received from a peer: strip path components, reject
+/// traversal attacks. Prevents a malicious sender from writing outside the
+/// output directory via `../../.bashrc` or similar.
+fn sanitize_filename(raw: &str) -> String {
+    // Take only the final path component (handles both / and \ separators)
+    let base = raw.rsplit(['/', '\\']).next().unwrap_or(raw);
+    // Remove leading dots (no hidden files / no ".." tricks)
+    let trimmed = base.trim_start_matches('.');
+    // Replace any remaining problematic characters
+    let clean: String = trimmed
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '.' || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if clean.is_empty() {
+        "received_file".to_string()
+    } else {
+        clean
     }
 }
 
