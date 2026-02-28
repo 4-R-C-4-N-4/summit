@@ -1,0 +1,31 @@
+[Unit]
+Description=Summit P2P Daemon
+Documentation=https://github.com/nicholasgasior/summit
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/summitd
+Restart=on-failure
+RestartSec=5
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.config/summit %h/.local/share/summit
+PrivateTmp=true
+
+# Logging — view with: journalctl -u summitd -f
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=summitd
+
+# Environment (optional overrides)
+# Environment=SUMMIT_NETWORK__INTERFACE=wlan0
+# Environment=SUMMIT_TRUST__AUTO_TRUST=true
+# Environment=RUST_LOG=info
+
+[Install]
+WantedBy=default.target

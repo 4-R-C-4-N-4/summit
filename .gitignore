@@ -47,6 +47,7 @@ zenith/node_modules/
 *.xcodeproj
 /.idea/
 /dist/
+!/dist/summitd.service
 node_modules/
 SHASUMS256.txt
 
