@@ -113,6 +113,14 @@ impl TokenBucket {
     pub fn tokens(&self) -> f64 {
         self.tokens.min(self.capacity)
     }
+
+    pub fn capacity(&self) -> f64 {
+        self.capacity
+    }
+
+    pub fn rate(&self) -> f64 {
+        self.refill_rate
+    }
 }
 
 #[cfg(test)]

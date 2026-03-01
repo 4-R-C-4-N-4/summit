@@ -192,6 +192,17 @@ async fn handle_recovery(
 
             let mut gone_hashes = Vec::new();
 
+            // Pace retransmissions based on the receiver's advertised capacity.
+            // Realtime priority bypasses the token bucket, so pacing is the
+            // only rate control for recovery traffic.
+            let (batch_size, batch_delay_ms) = {
+                let b = bucket.lock().await;
+                let burst = (b.capacity() as u32).max(8);
+                let rate = (b.rate() as u32).max(8);
+                let delay = ((burst as u64) * 1000 / (rate as u64)).max(50);
+                (burst, delay)
+            };
+
             let mut retransmitted = 0u32;
             for content_hash in &nack.missing {
                 match cache.get(content_hash) {
@@ -210,11 +221,9 @@ async fn handle_recovery(
                             return;
                         }
                         retransmitted += 1;
-                        // Pace retransmissions to avoid flooding the receiver.
-                        // With Realtime priority (bypasses token bucket), pacing
-                        // is the only rate control for recovery traffic.
-                        if retransmitted % 32 == 0 {
-                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        if retransmitted % batch_size == 0 {
+                            tokio::time::sleep(std::time::Duration::from_millis(batch_delay_ms))
+                                .await;
                         }
                     }
                     Ok(None) => {
@@ -242,7 +251,7 @@ async fn handle_recovery(
                         type_tag: wire::recovery::GONE,
                         schema_id: wire::recovery_hash(),
                         payload: bytes::Bytes::from(payload),
-                        priority_flags: 0x02,
+                        priority_flags: 0x01, // Realtime — recovery protocol must not be rate-limited
                     };
                     let _ = chunk_tx
                         .send((

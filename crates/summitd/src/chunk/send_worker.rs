@@ -3,6 +3,7 @@
 
 use tokio::sync::{broadcast, mpsc};
 
+use summit_core::crypto::hash;
 use summit_core::wire::Contract;
 use summit_services::{
     ChunkCache, SendTarget, SessionTable, TokenBucket, TrustLevel, TrustRegistry,
@@ -84,6 +85,14 @@ impl SendWorker {
         if target_sessions.is_empty() {
             tracing::debug!(?target, "no target sessions found");
             return;
+        }
+
+        // Pre-cache the payload so NACK retransmissions can find it even if
+        // this send is rate-limited and dropped by the token bucket below.
+        // Without this, dropped chunks are permanently lost (GONE).
+        let content_hash = hash(&chunk.payload);
+        if let Err(e) = self.cache.put(&content_hash, &chunk.payload) {
+            tracing::warn!(error = %e, "failed to pre-cache chunk");
         }
 
         let has_realtime = self
