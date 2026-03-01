@@ -76,7 +76,7 @@ async fn send_nacks(
                 type_tag: wire::recovery::NACK,
                 schema_id: wire::recovery_hash(),
                 payload: bytes::Bytes::from(payload),
-                priority_flags: 0x02,
+                priority_flags: 0x01, // Realtime — recovery must not be rate-limited
             };
 
             if let Err(e) = chunk_tx.send((target.clone(), chunk)).await {

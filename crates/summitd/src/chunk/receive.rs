@@ -264,16 +264,20 @@ async fn handle_recovery(
                     return;
                 }
             };
-            tracing::info!(
-                peer = hex::encode(&peer_pubkey[..8]),
-                hashes = gone.hashes.len(),
-                "GONE received — checking assemblies"
-            );
+            // Don't abandon immediately — broadcast NACKs (attempt 1+) may
+            // recover chunks from other peers. Log for diagnostics and let
+            // the NACK stall counter handle exhaustion naturally.
             let stalled = reassembler.missing_chunks().await;
-            for (filename, missing) in stalled {
-                let any_gone = missing.iter().any(|h| gone.hashes.contains(h));
-                if any_gone {
-                    reassembler.abandon(&filename).await;
+            for (filename, missing) in &stalled {
+                let gone_count = missing.iter().filter(|h| gone.hashes.contains(h)).count();
+                if gone_count > 0 {
+                    tracing::warn!(
+                        peer = hex::encode(&peer_pubkey[..8]),
+                        filename,
+                        gone = gone_count,
+                        still_missing = missing.len(),
+                        "peer reports chunks GONE — will retry via broadcast"
+                    );
                 }
             }
         }
