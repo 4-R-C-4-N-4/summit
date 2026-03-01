@@ -43,11 +43,16 @@ pub async fn run(
         settings.task_timeout_secs
     });
 
+    let max_memory_bytes = settings.max_memory_bytes;
+    let max_cpu_cores = settings.max_cpu_cores;
+
     let semaphore = Arc::new(Semaphore::new(max_tasks));
 
     tracing::info!(
         max_concurrent = max_tasks,
         timeout_secs = task_timeout.as_secs(),
+        max_memory_bytes,
+        max_cpu_cores,
         "compute executor started"
     );
 
@@ -83,7 +88,12 @@ pub async fn run(
                 let start = Instant::now();
                 let result_value = match tokio::time::timeout(
                     task_timeout,
-                    execute_task(&task.submit.payload, &task_dir),
+                    execute_task(
+                        &task.submit.payload,
+                        &task_dir,
+                        max_memory_bytes,
+                        max_cpu_cores,
+                    ),
                 )
                 .await
                 {
@@ -175,6 +185,48 @@ pub async fn run(
     }
 }
 
+/// Apply resource limits (RLIMIT_AS for memory, RLIMIT_CPU for CPU time)
+/// via `pre_exec`. Runs after fork, before exec — only affects the child.
+fn apply_resource_limits(
+    cmd: &mut tokio::process::Command,
+    max_memory_bytes: u64,
+    max_cpu_cores: u32,
+) {
+    let mem = max_memory_bytes;
+    let cpu = max_cpu_cores;
+    if mem == 0 && cpu == 0 {
+        return;
+    }
+    // Safety: pre_exec runs between fork and exec in the child process.
+    // We only call async-signal-safe libc functions (setrlimit).
+    unsafe {
+        cmd.pre_exec(move || {
+            if mem > 0 {
+                let rlim = libc::rlimit {
+                    rlim_cur: mem,
+                    rlim_max: mem,
+                };
+                if libc::setrlimit(libc::RLIMIT_AS, &rlim) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+            if cpu > 0 {
+                // RLIMIT_CPU is in seconds. Approximate: allow cpu_cores * task_timeout
+                // as total CPU seconds. Default to 600s if not otherwise bounded.
+                let cpu_secs = (cpu as u64) * 600;
+                let rlim = libc::rlimit {
+                    rlim_cur: cpu_secs,
+                    rlim_max: cpu_secs,
+                };
+                if libc::setrlimit(libc::RLIMIT_CPU, &rlim) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+            Ok(())
+        });
+    }
+}
+
 /// Execute a task payload.
 ///
 /// Supported formats:
@@ -183,6 +235,8 @@ pub async fn run(
 async fn execute_task(
     payload: &serde_json::Value,
     task_dir: &Path,
+    max_memory_bytes: u64,
+    max_cpu_cores: u32,
 ) -> Result<serde_json::Value, String> {
     // Ensure task directory exists.
     tokio::fs::create_dir_all(task_dir)
@@ -191,13 +245,13 @@ async fn execute_task(
 
     let output = if let Some(run) = payload.get("run").and_then(|v| v.as_str()) {
         // Shell mode: pipes, redirections, globs all work.
-        tokio::process::Command::new("sh")
-            .args(["-c", run])
-            .current_dir(task_dir)
-            .output()
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", run]).current_dir(task_dir);
+        apply_resource_limits(&mut cmd, max_memory_bytes, max_cpu_cores);
+        cmd.output()
             .await
             .map_err(|e| format!("failed to spawn shell: {e}"))?
-    } else if let Some(cmd) = payload.get("cmd").and_then(|v| v.as_str()) {
+    } else if let Some(cmd_str) = payload.get("cmd").and_then(|v| v.as_str()) {
         // Direct exec mode: no shell interpretation.
         let args: Vec<&str> = payload
             .get("args")
@@ -205,12 +259,12 @@ async fn execute_task(
             .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
             .unwrap_or_default();
 
-        tokio::process::Command::new(cmd)
-            .args(&args)
-            .current_dir(task_dir)
-            .output()
+        let mut cmd = tokio::process::Command::new(cmd_str);
+        cmd.args(&args).current_dir(task_dir);
+        apply_resource_limits(&mut cmd, max_memory_bytes, max_cpu_cores);
+        cmd.output()
             .await
-            .map_err(|e| format!("failed to spawn '{}': {e}", cmd))?
+            .map_err(|e| format!("failed to spawn '{}': {e}", cmd_str))?
     } else {
         return Err("payload must contain \"run\" (shell string) or \"cmd\" (direct exec)".into());
     };

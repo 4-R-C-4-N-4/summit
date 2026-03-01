@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('electron', {
   openPath: (p) => ipcRenderer.invoke('open-path', p),
 
   // Platform info
+  apiPort: Number(process.env.SUMMIT_API_PORT) || 9001,
   platform: process.platform,
   versions: {
     node: process.versions.node,

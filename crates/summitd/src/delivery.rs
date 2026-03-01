@@ -1,9 +1,13 @@
 //! Delivery tracking — records which chunks arrived from which peers.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use dashmap::DashMap;
 use tokio::time::Instant;
+
+/// How long to keep delivery records before eviction.
+const DELIVERY_TTL: Duration = Duration::from_secs(120);
 
 /// Tracks chunk deliveries for multipath analysis.
 #[derive(Clone)]
@@ -28,18 +32,31 @@ impl DeliveryTracker {
             .push((peer_addr, Instant::now()));
     }
 
-    /// Get all deliveries for a chunk.
-    #[allow(dead_code)]
-    pub fn get(&self, content_hash: &[u8; 32]) -> Option<Vec<(String, Instant)>> {
-        self.deliveries.get(content_hash).map(|v| v.clone())
-    }
-
     /// Count how many times this chunk was delivered (including retransmissions).
     pub fn delivery_count(&self, content_hash: &[u8; 32]) -> usize {
         self.deliveries
             .get(content_hash)
             .map(|v| v.len())
             .unwrap_or(0)
+    }
+
+    /// Evict entries older than TTL. Call periodically to bound memory.
+    pub fn evict_expired(&self) {
+        let before = self.deliveries.len();
+        self.deliveries.retain(|_, entries| {
+            entries
+                .last()
+                .map(|(_, t)| t.elapsed() < DELIVERY_TTL)
+                .unwrap_or(false)
+        });
+        let removed = before.saturating_sub(self.deliveries.len());
+        if removed > 0 {
+            tracing::debug!(
+                removed,
+                remaining = self.deliveries.len(),
+                "delivery tracker eviction"
+            );
+        }
     }
 
     /// Print delivery stats for chunks with multiple deliveries.

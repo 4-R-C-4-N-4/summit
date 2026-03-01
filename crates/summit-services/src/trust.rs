@@ -266,6 +266,10 @@ pub struct UntrustedBuffer {
     buffer: Arc<DashMap<[u8; 32], Vec<BufferedChunk>>>,
 }
 
+/// Max buffered chunks per untrusted peer. Prevents memory exhaustion from
+/// hostile peers that flood chunks without ever being trusted.
+const MAX_BUFFERED_PER_PEER: usize = 256;
+
 impl Default for UntrustedBuffer {
     fn default() -> Self {
         Self::new()
@@ -280,6 +284,7 @@ impl UntrustedBuffer {
     }
 
     /// Add a chunk from an untrusted peer (preserves full header for replay).
+    /// Drops the oldest chunk if the per-peer cap is reached.
     pub fn add(
         &self,
         peer_pubkey: [u8; 32],
@@ -288,15 +293,16 @@ impl UntrustedBuffer {
         schema_id: [u8; 32],
         data: Bytes,
     ) {
-        self.buffer
-            .entry(peer_pubkey)
-            .or_default()
-            .push(BufferedChunk {
-                content_hash,
-                type_tag,
-                schema_id,
-                payload: data,
-            });
+        let mut entry = self.buffer.entry(peer_pubkey).or_default();
+        if entry.len() >= MAX_BUFFERED_PER_PEER {
+            entry.remove(0); // drop oldest
+        }
+        entry.push(BufferedChunk {
+            content_hash,
+            type_tag,
+            schema_id,
+            payload: data,
+        });
     }
 
     /// Retrieve and remove all buffered chunks for a peer (when they become trusted).

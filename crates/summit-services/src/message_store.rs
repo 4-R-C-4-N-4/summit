@@ -49,6 +49,29 @@ impl MessageStore {
             .unwrap_or(0)
     }
 
+    /// Remove messages older than `retention_days`. Returns count removed.
+    pub fn expire(&self, retention_days: u32) -> usize {
+        if retention_days == 0 {
+            return 0; // 0 = keep forever
+        }
+        let cutoff_ms = {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            now.saturating_sub(retention_days as u64 * 86_400 * 1_000)
+        };
+        let mut removed = 0usize;
+        for mut entry in self.messages.iter_mut() {
+            let before = entry.value().len();
+            entry.value_mut().retain(|m| m.timestamp >= cutoff_ms);
+            removed += before - entry.value().len();
+        }
+        // Drop empty entries
+        self.messages.retain(|_, msgs| !msgs.is_empty());
+        removed
+    }
+
     /// Clear all stored messages.
     pub fn clear(&self) {
         self.messages.clear();

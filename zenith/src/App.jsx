@@ -1,13 +1,16 @@
 import { DaemonProvider } from './context/DaemonContext';
 import { UIProvider } from './context/UIContext';
 import AppShell from './components/layout/AppShell';
+import ErrorBoundary from './components/common/ErrorBoundary';
 
 export default function App() {
   return (
-    <DaemonProvider>
-      <UIProvider>
-        <AppShell />
-      </UIProvider>
-    </DaemonProvider>
+    <ErrorBoundary>
+      <DaemonProvider>
+        <UIProvider>
+          <AppShell />
+        </UIProvider>
+      </DaemonProvider>
+    </ErrorBoundary>
   );
 }

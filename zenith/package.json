@@ -31,6 +31,7 @@
     "wait-on": "^7.2.0"
   },
   "dependencies": {
+    "@iarna/toml": "^2.2.5",
     "@tailwindcss/vite": "^4.2.1",
     "d3-force": "^3.0.0",
     "react": "^18.2.0",

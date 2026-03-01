@@ -21,7 +21,7 @@ Devices discover each other via IPv6 multicast, establish encrypted sessions usi
 
 ### From Release (Recommended)
 
-Download the latest release from [Releases](../../releases):
+Download the latest release from [Releases](https://github.com/4-R-C-4-N-4/summit/releases):
 
 ```bash
 # x86_64

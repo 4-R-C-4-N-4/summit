@@ -9,6 +9,6 @@ path = "main.rs"
 
 [dev-dependencies]
 summit-core = { path = "../../crates/summit-core" }
-tokio       = { version = "1", features = ["full"] }
-anyhow      = "1"
-serde_json = "1.0.85"
+tokio       = { workspace = true }
+anyhow      = { workspace = true }
+serde_json  = { workspace = true }

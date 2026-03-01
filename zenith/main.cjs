@@ -8,7 +8,7 @@ let tray;
 let summitProcess = null;
 
 const isDev = !app.isPackaged;
-const API_PORT = 9001;
+const API_PORT = Number(process.env.SUMMIT_API_PORT) || 9001;
 
 // Create the main window
 function createWindow() {
@@ -132,15 +132,15 @@ async function checkDaemonStatus() {
 }
 
 // Start summitd daemon
-function startDaemon(interface) {
+function startDaemon(iface) {
   if (summitProcess) {
     console.log('Daemon already running');
     return;
   }
 
-  console.log(`Starting summitd on ${interface}...`);
-  
-  summitProcess = spawn('summitd', [interface], {
+  console.log(`Starting summitd on ${iface}...`);
+
+  summitProcess = spawn('summitd', [iface], {
     stdio: 'inherit'
   });
 
@@ -167,80 +167,31 @@ function stopDaemon() {
 
 const fs = require('fs');
 const os = require('os');
+const TOML = require('@iarna/toml');
 
-const CONFIG_PATH = path.join(os.homedir(), '.config', 'summit', 'config.toml');
+const CONFIG_PATH = process.env.SUMMIT_CONFIG
+  || path.join(
+    process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'),
+    'summit',
+    'config.toml'
+  );
 
 function parseToml(text) {
-  const result = {};
-  let sectionPath = null;
+  return TOML.parse(text);
+}
 
-  for (const raw of text.split('\n')) {
-    const line = raw.trim();
-    if (!line || line.startsWith('#')) continue;
-
-    const sectionMatch = line.match(/^\[([^\]]+)\]$/);
-    if (sectionMatch) {
-      sectionPath = sectionMatch[1].split('.');
-      let cur = result;
-      for (const part of sectionPath) {
-        if (!cur[part]) cur[part] = {};
-        cur = cur[part];
-      }
-      continue;
-    }
-
-    const kv = line.match(/^(\w+)\s*=\s*(.+)$/);
-    if (!kv) continue;
-    const key = kv[1];
-    const raw_val = kv[2].trim();
-
-    let value;
-    if (raw_val === 'true') value = true;
-    else if (raw_val === 'false') value = false;
-    else if (raw_val.startsWith('"') && raw_val.endsWith('"')) value = raw_val.slice(1, -1);
-    else if (raw_val.startsWith('[') && raw_val.endsWith(']')) {
-      const inner = raw_val.slice(1, -1).trim();
-      value = inner ? inner.split(',').map(s => s.trim().replace(/^"(.*)"$/, '$1')).filter(Boolean) : [];
-    }
-    else if (!isNaN(raw_val) && raw_val !== '') value = Number(raw_val);
-    else value = raw_val;
-
-    let cur = result;
-    if (sectionPath) {
-      for (const part of sectionPath) {
-        if (!cur[part]) cur[part] = {};
-        cur = cur[part];
-      }
+/// Apply a list of updates to a parsed TOML object and re-stringify.
+function applyConfigUpdates(config, updates) {
+  for (const { section, key, value } of updates) {
+    const parts = section.split('.');
+    let cur = config;
+    for (const part of parts) {
+      if (!cur[part]) cur[part] = {};
+      cur = cur[part];
     }
     cur[key] = value;
   }
-  return result;
-}
-
-// Patch a single key inside a TOML section in-place (string replacement)
-function patchToml(text, section, key, newValue) {
-  let formatted;
-  if (typeof newValue === 'string') formatted = `"${newValue}"`;
-  else if (typeof newValue === 'boolean') formatted = String(newValue);
-  else if (Array.isArray(newValue)) formatted = `[${newValue.map(v => `"${v}"`).join(', ')}]`;
-  else formatted = String(newValue);
-
-  const lines = text.split('\n');
-  let inSection = false;
-
-  for (let i = 0; i < lines.length; i++) {
-    const t = lines[i].trim();
-    if (t === `[${section}]`) { inSection = true; continue; }
-    if (t.startsWith('[')) { inSection = false; continue; }
-    if (inSection) {
-      const m = lines[i].match(/^(\s*)(\w+)(\s*=\s*)/);
-      if (m && m[2] === key) {
-        lines[i] = `${m[1]}${key}${m[3]}${formatted}`;
-        return lines.join('\n');
-      }
-    }
-  }
-  return text; // key not found — return unchanged
+  return TOML.stringify(config);
 }
 
 // IPC handlers
@@ -248,8 +199,8 @@ ipcMain.handle('check-daemon', async () => {
   return await checkDaemonStatus();
 });
 
-ipcMain.handle('start-daemon', async (event, interface) => {
-  startDaemon(interface);
+ipcMain.handle('start-daemon', async (event, iface) => {
+  startDaemon(iface);
   // Wait a bit for daemon to start
   await new Promise(resolve => setTimeout(resolve, 2000));
   return await checkDaemonStatus();
@@ -272,11 +223,10 @@ ipcMain.handle('read-config', () => {
 ipcMain.handle('write-config', (_, updates) => {
   // updates: [{ section, key, value }, ...]
   try {
-    let text = fs.readFileSync(CONFIG_PATH, 'utf8');
-    for (const { section, key, value } of updates) {
-      text = patchToml(text, section, key, value);
-    }
-    fs.writeFileSync(CONFIG_PATH, text, 'utf8');
+    const text = fs.readFileSync(CONFIG_PATH, 'utf8');
+    const config = TOML.parse(text);
+    const updated = applyConfigUpdates(config, updates);
+    fs.writeFileSync(CONFIG_PATH, updated, 'utf8');
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err.message };

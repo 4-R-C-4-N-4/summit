@@ -1,4 +1,5 @@
-const API_BASE = 'http://127.0.0.1:9001/api';
+const API_PORT = window.electron?.apiPort || 9001;
+const API_BASE = `http://127.0.0.1:${API_PORT}/api`;
 
 async function request(path, options = {}) {
   let res;

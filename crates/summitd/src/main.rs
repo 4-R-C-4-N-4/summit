@@ -324,6 +324,23 @@ async fn main() -> Result<()> {
             loop {
                 interval.tick().await;
                 tracker.print_stats();
+                tracker.evict_expired();
+            }
+        })
+    };
+
+    // Message retention — expire old messages once per hour
+    let _message_expiry = {
+        let store = message_store.clone();
+        let retention_days = config.services.messaging_settings.retention_days;
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(3600));
+            loop {
+                interval.tick().await;
+                let removed = store.expire(retention_days);
+                if removed > 0 {
+                    tracing::info!(removed, retention_days, "expired old messages");
+                }
             }
         })
     };

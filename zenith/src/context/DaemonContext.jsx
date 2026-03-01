@@ -49,8 +49,23 @@ export function DaemonProvider({ children }) {
 
   useEffect(() => {
     poll();
-    const id = setInterval(poll, 2000);
-    return () => clearInterval(id);
+    let id = setInterval(poll, 2000);
+
+    const onVisibility = () => {
+      if (document.hidden) {
+        clearInterval(id);
+        id = null;
+      } else {
+        poll();
+        id = setInterval(poll, 2000);
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+
+    return () => {
+      clearInterval(id);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
   }, [poll]);
 
   // Action methods
