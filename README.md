@@ -103,6 +103,11 @@ summit-ctl compute tasks <pubkey>    # List distributed tasks per peer
   # 2. Or filter by sender
   summit-ctl compute tasks <A_pubkey>
 ```
+## Zenith UI
+
+<img width="2664" height="1918" alt="image" src="https://github.com/user-attachments/assets/242eff40-f32f-4df2-99d8-1c2d696058c5" />
+<img width="2664" height="1918" alt="image" src="https://github.com/user-attachments/assets/2386ea9c-db5a-4937-88d4-d6e645fdf595" />
+
 
 ## Design
 
