@@ -113,6 +113,9 @@ summit-ctl compute tasks <pubkey>    # List distributed tasks per peer
 - **QoS contracts** -- Realtime (never buffered), Bulk (high throughput), Background (low priority)
 - **Three-tier trust** -- Trusted (full access), Untrusted (chunks buffered), Blocked (rejected)
 
+## Consider helping me support this project forever
+[$$$?](https://ko-fi.com/4rc4n4)
+
 ## License
 
 MIT
