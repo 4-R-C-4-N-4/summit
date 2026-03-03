@@ -1752,7 +1752,6 @@ dependencies = [
  "summit-core",
  "summit-services",
  "tokio",
- "tower-http",
  "tracing",
 ]
 

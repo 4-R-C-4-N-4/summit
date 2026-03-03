@@ -10,7 +10,6 @@ axum            = { version = "0.8.8", features = ["multipart"] }
 tokio           = { workspace = true }
 serde           = { workspace = true }
 serde_json      = { workspace = true }
-tower-http      = { version = "0.6.8", features = ["cors"] }
 blake3          = { workspace = true }
 bytes           = { workspace = true }
 hex             = { workspace = true }

@@ -97,3 +97,115 @@ impl ChunkService for MessagingService {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::service::ChunkService;
+
+    fn make_service() -> MessagingService {
+        MessagingService::new(MessageStore::new())
+    }
+
+    fn dummy_header() -> summit_core::wire::ChunkHeader {
+        summit_core::wire::ChunkHeader {
+            content_hash: [0u8; 32],
+            schema_id: messaging_schema_id(),
+            type_tag: 0,
+            length: 0,
+            flags: 0,
+            version: 1,
+        }
+    }
+
+    fn make_envelope(msg_id: &str, timestamp: u64) -> MessageEnvelope {
+        MessageEnvelope {
+            msg_id: msg_id.to_string(),
+            msg_type: msg_types::TEXT.to_string(),
+            sender: "a".repeat(64),
+            timestamp,
+            payload: serde_json::json!({ "text": "hello" }),
+        }
+    }
+
+    #[test]
+    fn handle_chunk_valid_message() {
+        let svc = make_service();
+        let peer = [1u8; 32];
+        let env = make_envelope("msg-1", 100);
+        let payload = serde_json::to_vec(&env).unwrap();
+
+        svc.handle_chunk(&peer, &dummy_header(), &payload).unwrap();
+
+        let msgs = svc.store.get(&peer);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].msg_id, "msg-1");
+    }
+
+    #[test]
+    fn handle_chunk_invalid_json() {
+        let svc = make_service();
+        let peer = [1u8; 32];
+
+        let result = svc.handle_chunk(&peer, &dummy_header(), b"garbage");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn handle_chunk_multiple_from_same_peer() {
+        let svc = make_service();
+        let peer = [1u8; 32];
+
+        for i in 0..3 {
+            let env = make_envelope(&format!("msg-{i}"), 100 + i);
+            let payload = serde_json::to_vec(&env).unwrap();
+            svc.handle_chunk(&peer, &dummy_header(), &payload).unwrap();
+        }
+
+        let msgs = svc.store.get(&peer);
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[0].msg_id, "msg-0");
+        assert_eq!(msgs[1].msg_id, "msg-1");
+        assert_eq!(msgs[2].msg_id, "msg-2");
+    }
+
+    #[test]
+    fn handle_chunk_different_peers() {
+        let svc = make_service();
+        let peer_a = [1u8; 32];
+        let peer_b = [2u8; 32];
+
+        let env_a = make_envelope("msg-a", 100);
+        let env_b = make_envelope("msg-b", 200);
+
+        svc.handle_chunk(
+            &peer_a,
+            &dummy_header(),
+            &serde_json::to_vec(&env_a).unwrap(),
+        )
+        .unwrap();
+        svc.handle_chunk(
+            &peer_b,
+            &dummy_header(),
+            &serde_json::to_vec(&env_b).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(svc.store.get(&peer_a).len(), 1);
+        assert_eq!(svc.store.get(&peer_b).len(), 1);
+        assert_eq!(svc.store.get(&peer_a)[0].msg_id, "msg-a");
+        assert_eq!(svc.store.get(&peer_b)[0].msg_id, "msg-b");
+    }
+
+    #[test]
+    fn service_hash_matches_schema_id() {
+        let svc = make_service();
+        assert_eq!(svc.service_hash(), messaging_schema_id());
+    }
+
+    #[test]
+    fn contract_is_bulk() {
+        let svc = make_service();
+        assert_eq!(svc.contract(), Contract::Bulk);
+    }
+}

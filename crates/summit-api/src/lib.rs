@@ -3,16 +3,9 @@ pub mod handlers;
 use axum::extract::DefaultBodyLimit;
 use axum::routing::{delete, get, post};
 use axum::Router;
-use tower_http::cors::{Any, CorsLayer};
-
 pub use handlers::ApiState;
 
 pub async fn serve(state: ApiState, port: u16) -> anyhow::Result<()> {
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
-
     let api_routes = Router::new()
         .route("/status", get(handlers::handle_status))
         .route("/peers", get(handlers::handle_peers))
@@ -45,7 +38,7 @@ pub async fn serve(state: ApiState, port: u16) -> anyhow::Result<()> {
         .route("/compute/submit", post(handlers::handle_compute_submit))
         .with_state(state);
 
-    let app = Router::new().nest("/api", api_routes).layer(cors);
+    let app = Router::new().nest("/api", api_routes);
 
     let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", port)).await?;
     tracing::info!(port, "API listening on 127.0.0.1");

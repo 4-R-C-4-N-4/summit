@@ -19,6 +19,7 @@ use crate::compute_store::ComputeStore;
 use crate::compute_types::{msg_types, ComputeEnvelope, TaskAck, TaskResult, TaskStatus};
 use crate::file_transfer::chunk_file;
 use crate::send_target::SendTarget;
+use crate::trust::{TrustLevel, TrustRegistry};
 use summit_core::config::ComputeSettings;
 
 use std::sync::Arc;
@@ -28,6 +29,7 @@ pub async fn run(
     store: ComputeStore,
     settings: ComputeSettings,
     chunk_tx: mpsc::Sender<(SendTarget, OutgoingChunk)>,
+    trust: TrustRegistry,
 ) {
     let max_tasks = if settings.max_concurrent_tasks == 0 {
         std::thread::available_parallelism()
@@ -65,6 +67,22 @@ pub async fn run(
         for task in queued {
             let task_id = task.submit.task_id.clone();
             let peer_pubkey = task.peer_pubkey;
+
+            // Only trusted peers may execute compute tasks.
+            match trust.check(&peer_pubkey) {
+                TrustLevel::Trusted => {}
+                level => {
+                    tracing::warn!(
+                        task_id = &task_id[..16.min(task_id.len())],
+                        peer = hex::encode(&peer_pubkey[..8]),
+                        ?level,
+                        "rejecting compute task from non-trusted peer"
+                    );
+                    store.update_status(&task_id, TaskStatus::Failed);
+                    send_ack(&chunk_tx, &peer_pubkey, &task_id, TaskStatus::Failed).await;
+                    continue;
+                }
+            }
 
             // Mark running immediately so the next poll doesn't re-pick it.
             store.update_status(&task_id, TaskStatus::Running);
@@ -405,4 +423,146 @@ async fn send_result(
             chunk,
         ))
         .await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn temp_dir() -> PathBuf {
+        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!("summit-exec-test-{}-{}", std::process::id(), id))
+    }
+
+    // ── execute_task tests ───────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn execute_task_shell_echo() {
+        let dir = temp_dir();
+        let payload = serde_json::json!({ "run": "echo hello" });
+        let result = execute_task(&payload, &dir, 0, 0).await.unwrap();
+        assert_eq!(result["exit_code"], 0);
+        assert!(result["stdout"].as_str().unwrap().contains("hello"));
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn execute_task_direct_exec() {
+        let dir = temp_dir();
+        let payload = serde_json::json!({ "cmd": "echo", "args": ["hi"] });
+        let result = execute_task(&payload, &dir, 0, 0).await.unwrap();
+        assert_eq!(result["exit_code"], 0);
+        assert!(result["stdout"].as_str().unwrap().contains("hi"));
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn execute_task_invalid_payload() {
+        let dir = temp_dir();
+        let payload = serde_json::json!({ "nope": true });
+        let err = execute_task(&payload, &dir, 0, 0).await.unwrap_err();
+        assert!(err.contains("run"));
+        assert!(err.contains("cmd"));
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn execute_task_failing_command() {
+        let dir = temp_dir();
+        let payload = serde_json::json!({ "run": "false" });
+        let err = execute_task(&payload, &dir, 0, 0).await.unwrap_err();
+        assert!(err.contains("exit code"));
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn execute_task_creates_output_file() {
+        let dir = temp_dir();
+        let payload = serde_json::json!({ "run": "echo data > out.txt" });
+        let result = execute_task(&payload, &dir, 0, 0).await.unwrap();
+        assert_eq!(result["exit_code"], 0);
+        assert!(dir.join("out.txt").exists());
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    // ── collect_output_files tests ───────────────────────────────────────
+
+    #[tokio::test]
+    async fn collect_output_files_empty_dir() {
+        let dir = temp_dir();
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let files = collect_output_files(&dir).await;
+        assert!(files.is_empty());
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn collect_output_files_nested() {
+        let dir = temp_dir();
+        let sub = dir.join("sub");
+        tokio::fs::create_dir_all(&sub).await.unwrap();
+        tokio::fs::write(dir.join("a.txt"), b"a").await.unwrap();
+        tokio::fs::write(sub.join("b.txt"), b"b").await.unwrap();
+        let files = collect_output_files(&dir).await;
+        assert_eq!(files.len(), 2);
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn collect_output_files_nonexistent() {
+        let dir = temp_dir().join("does_not_exist");
+        let files = collect_output_files(&dir).await;
+        assert!(files.is_empty());
+    }
+
+    // ── trust gate rejection test ────────────────────────────────────────
+
+    #[tokio::test]
+    async fn trust_gate_rejects_untrusted_peer() {
+        let store = ComputeStore::new();
+        let trust = TrustRegistry::new();
+        let (chunk_tx, mut chunk_rx) = mpsc::channel(16);
+
+        let peer = [0xAAu8; 32];
+        // peer is untrusted by default
+
+        let submit = crate::compute_types::TaskSubmit {
+            task_id: "untrusted-task-001".to_string(),
+            sender: hex::encode(peer),
+            timestamp: 100,
+            payload: serde_json::json!({ "run": "echo no" }),
+        };
+        store.submit(peer, submit);
+
+        // Run one poll iteration manually
+        let queued = store.queued_remote_tasks();
+        assert_eq!(queued.len(), 1);
+
+        for task in queued {
+            let task_id = task.submit.task_id.clone();
+            let peer_pubkey = task.peer_pubkey;
+
+            match trust.check(&peer_pubkey) {
+                TrustLevel::Trusted => panic!("should not be trusted"),
+                _level => {
+                    store.update_status(&task_id, TaskStatus::Failed);
+                    send_ack(&chunk_tx, &peer_pubkey, &task_id, TaskStatus::Failed).await;
+                }
+            }
+        }
+
+        // Verify task marked Failed
+        let task = store.get_task("untrusted-task-001").unwrap();
+        assert_eq!(task.status, TaskStatus::Failed);
+
+        // Verify an ack chunk was sent
+        let (target, _chunk) = chunk_rx.try_recv().unwrap();
+        match target {
+            SendTarget::Peer { public_key } => assert_eq!(public_key, peer),
+            _ => panic!("expected Peer target"),
+        }
+    }
 }

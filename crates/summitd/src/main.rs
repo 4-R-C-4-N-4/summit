@@ -419,8 +419,9 @@ async fn main() -> Result<()> {
         let store = compute_store.clone();
         let settings = config.services.compute_settings.clone();
         let tx = chunk_tx.clone();
+        let trust = trust_registry.clone();
         Some(tokio::spawn(async move {
-            summit_services::compute_executor::run(store, settings, tx).await;
+            summit_services::compute_executor::run(store, settings, tx, trust).await;
         }))
     } else {
         None

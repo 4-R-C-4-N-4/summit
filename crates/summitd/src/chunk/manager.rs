@@ -99,12 +99,16 @@ impl ChunkManager {
             let bucket = active.bucket.clone();
             let reassembler = self.reassembler.clone();
             let peer_pubkey = active.meta.peer_pubkey;
+            let service_hashes: Vec<_> = active.meta.active_services.keys().copied().collect();
             let trust = self.trust.clone();
             let buffer = self.untrusted_buffer.clone();
             let dispatcher = self.dispatcher.clone();
             let cache = self.cache.clone();
             let tracker = self.delivery_tracker.clone();
             let outbound_tx = self.outbound_tx.clone();
+
+            // Notify services that this peer's session is now active.
+            dispatcher.activate_session(&peer_pubkey, &service_hashes);
 
             // Send our bulk capacity to the peer
             let capacity = Capacity {
@@ -201,6 +205,8 @@ impl ChunkManager {
             let peer_addr_str = peer_addr.to_string();
             let session_table = self.sessions.clone();
             let seen = seen_sessions.clone();
+            let deactivate_dispatcher = self.dispatcher.clone();
+            let deactivate_hashes = service_hashes.clone();
             tokio::spawn(async move {
                 if let Err(e) = super::receive::receive_loop(
                     socket,
@@ -219,6 +225,8 @@ impl ChunkManager {
                 {
                     tracing::warn!(error = %e, "receive loop terminated");
                 }
+                // Notify services that this peer's session has ended.
+                deactivate_dispatcher.deactivate_session(&peer_pubkey, &deactivate_hashes);
                 // Prune the dead session so the initiator can reconnect
                 if session_table.remove(&session_id).is_some() {
                     tracing::info!(
