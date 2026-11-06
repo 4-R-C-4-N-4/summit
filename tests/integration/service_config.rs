@@ -7,7 +7,7 @@ fn test_service_config_disable_messaging() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
 
     let a_env = [("SUMMIT_SERVICES__MESSAGING", "false")];
@@ -56,7 +56,7 @@ fn test_service_config_enable_compute() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
 
     let env = [("SUMMIT_SERVICES__COMPUTE", "true")];

@@ -15,7 +15,7 @@ fn test_nack_recovers_file_under_packet_loss() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
     std::fs::remove_dir_all("/tmp/summit-received").ok();
 
@@ -80,7 +80,7 @@ fn test_nack_recovers_after_temporary_blackout() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
     std::fs::remove_dir_all("/tmp/summit-received").ok();
 
@@ -154,7 +154,7 @@ fn test_nack_in_progress_visible_during_stall() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
     std::fs::remove_dir_all("/tmp/summit-received").ok();
 
@@ -245,7 +245,7 @@ fn test_nack_large_file_recovery() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
     std::fs::remove_dir_all("/tmp/summit-received").ok();
 
@@ -305,7 +305,7 @@ fn test_nack_sender_gone_assembly_abandoned() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
     std::fs::remove_dir_all("/tmp/summit-received").ok();
 
@@ -380,7 +380,7 @@ fn test_nack_concurrent_file_recovery() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
     std::fs::remove_dir_all("/tmp/summit-received").ok();
 
@@ -475,7 +475,7 @@ fn test_nack_escalation_under_sender_loss() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
     std::fs::remove_dir_all("/tmp/summit-received").ok();
 
@@ -536,7 +536,7 @@ fn test_nack_loop_no_interference_clean_transfer() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
     std::fs::remove_dir_all("/tmp/summit-received").ok();
 

@@ -7,7 +7,7 @@ fn test_ctl_trust_lifecycle() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
 
     let mut node_a = spawn_daemon(NS_A, VETH_A, &[]);
@@ -109,7 +109,7 @@ fn test_ctl_trust_pending() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
 
     // No auto-trust: chunks from B will be buffered on A
@@ -174,7 +174,7 @@ fn test_auto_trust_config() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
 
     let auto_env = [("SUMMIT_TRUST__AUTO_TRUST", "true")];

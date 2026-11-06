@@ -113,6 +113,41 @@ pub fn block_udp_port(ns: &str, port: u16) -> FaultGuard {
     ])
 }
 
+/// Drop inbound capability announcements (multicast to ff02::1:9000) in a
+/// namespace, while unicast keeps working. This is what Android Wi-Fi does to
+/// an app that doesn't hold a MulticastLock.
+pub fn block_inbound_multicast(ns: &str) -> FaultGuard {
+    let rule = |op: &str| -> Vec<String> {
+        [
+            "ip",
+            "netns",
+            "exec",
+            ns,
+            "ip6tables",
+            op,
+            "INPUT",
+            "-d",
+            "ff02::1",
+            "-p",
+            "udp",
+            "--dport",
+            "9000",
+            "-j",
+            "DROP",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+    };
+    let add = rule("-A");
+    let status = Command::new(&add[0])
+        .args(&add[1..])
+        .status()
+        .expect("run ip6tables");
+    assert!(status.success(), "failed to install multicast drop rule");
+    FaultGuard::new(rule("-D"))
+}
+
 /// Block all UDP traffic via ip6tables inside a namespace.
 pub fn block_all_udp(ns: &str) -> FaultGuard {
     let _ = Command::new("ip")

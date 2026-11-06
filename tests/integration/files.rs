@@ -7,7 +7,7 @@ fn test_file_transfer_broadcast() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
     std::fs::remove_dir_all("/tmp/summit-received").ok();
 
@@ -81,7 +81,7 @@ fn test_file_transfer_targeted_peer() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
     std::fs::remove_dir_all("/tmp/summit-received").ok();
 
@@ -146,7 +146,7 @@ fn test_file_transfer_targeted_session() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
     std::fs::remove_dir_all("/tmp/summit-received").ok();
 
@@ -210,7 +210,7 @@ fn test_ctl_files_empty() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
 
     let mut node_a = spawn_daemon(NS_A, VETH_A, &[]);

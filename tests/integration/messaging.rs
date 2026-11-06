@@ -7,7 +7,7 @@ fn test_messaging_send_and_receive() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
 
     let auto_env = [("SUMMIT_TRUST__AUTO_TRUST", "true")];
@@ -66,7 +66,7 @@ fn test_ctl_messages_send() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
 
     let auto_env = [("SUMMIT_TRUST__AUTO_TRUST", "true")];
@@ -132,7 +132,7 @@ fn test_messaging_multiple() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
 
     let auto_env = [("SUMMIT_TRUST__AUTO_TRUST", "true")];
@@ -199,7 +199,7 @@ fn test_messaging_no_messages() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
 
     let mut node_a = spawn_daemon(NS_A, VETH_A, &[]);

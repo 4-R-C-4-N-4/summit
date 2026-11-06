@@ -7,7 +7,7 @@ fn test_compute_task_simple() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
 
     let env = [
@@ -86,7 +86,7 @@ fn test_ctl_compute_submit_json() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
 
     let env = [
@@ -139,7 +139,7 @@ fn test_ctl_compute_submit_shell() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
 
     let env = [
@@ -192,7 +192,7 @@ fn test_ctl_compute_tasks_all() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
 
     let env = [
@@ -256,7 +256,7 @@ fn test_compute_task_complex_payload() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
 
     let env = [
@@ -334,7 +334,7 @@ fn test_compute_no_tasks() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
 
     let env = [("SUMMIT_SERVICES__COMPUTE", "true")];

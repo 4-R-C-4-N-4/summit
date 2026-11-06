@@ -26,6 +26,7 @@ mod fault;
 mod files;
 mod infra;
 mod messaging;
+mod one_way;
 mod recovery;
 mod service_config;
 mod sessions;
@@ -42,24 +43,35 @@ pub const VETH_B: &str = "veth-b";
 /// Serializes all daemon-based tests so they don't conflict on port 9001.
 pub static DAEMON_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// Take the daemon lock. A test that panics while holding it poisons the
+/// mutex; that must not turn every later test into a bogus failure.
+pub fn daemon_lock() -> std::sync::MutexGuard<'static, ()> {
+    DAEMON_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 // ── Binary paths ──────────────────────────────────────────────────────────────
 
+/// Debug build dir, honouring CARGO_TARGET_DIR like cargo itself does.
+fn debug_dir() -> PathBuf {
+    std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("target")
+        })
+        .join("debug")
+}
+
 pub fn summitd_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("target/debug/summitd")
+    debug_dir().join("summitd")
 }
 
 pub fn summit_ctl_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("target/debug/summit-ctl")
+    debug_dir().join("summit-ctl")
 }
 
 pub fn binaries_available() -> bool {
@@ -68,30 +80,66 @@ pub fn binaries_available() -> bool {
 
 // ── Process helpers ───────────────────────────────────────────────────────────
 
-/// Kill all running summitd processes to ensure clean test state.
+/// Kill the test daemons to ensure clean test state. Matches the full binary
+/// path so a real summitd running on this machine is left alone.
 pub fn cleanup_summitd() {
-    Command::new("pkill").args(["-9", "summitd"]).output().ok();
+    Command::new("pkill")
+        .arg("-9")
+        .arg("-f")
+        .arg(summitd_path())
+        .output()
+        .ok();
     thread::sleep(Duration::from_millis(500));
 }
 
 /// Spawn a summitd in the given namespace on the given interface.
 /// `extra_env` is a list of (key, value) pairs appended to the environment.
 pub fn spawn_daemon(ns: &str, iface: &str, extra_env: &[(&str, &str)]) -> Child {
+    spawn_daemon_inner(ns, iface, extra_env, None)
+}
+
+/// Like `spawn_daemon`, but with a fixed identity (X25519 private key), for
+/// tests that depend on which peer has the lower public key.
+pub fn spawn_daemon_with_key(
+    ns: &str,
+    iface: &str,
+    extra_env: &[(&str, &str)],
+    private_key: [u8; 32],
+) -> Child {
+    spawn_daemon_inner(ns, iface, extra_env, Some(private_key))
+}
+
+fn spawn_daemon_inner(
+    ns: &str,
+    iface: &str,
+    extra_env: &[(&str, &str)],
+    private_key: Option<[u8; 32]>,
+) -> Child {
     let mut cmd = Command::new("ip");
     cmd.args(["netns", "exec", ns]);
     cmd.arg(summitd_path());
     cmd.arg(iface);
     cmd.env("RUST_LOG", "info");
-    // Unique cache dir per daemon so they don't share on-disk state
-    cmd.env(
-        "SUMMIT_CACHE",
-        format!("/tmp/summit-cache-{}-{}", ns, std::process::id()),
-    );
-    // Unique config path per daemon
-    cmd.env(
-        "SUMMIT_CONFIG",
-        format!("/tmp/summit-config-{}-{}.toml", ns, std::process::id()),
-    );
+
+    // Every spawn gets its own config/data roots. The keypair is persisted
+    // under the config dir, so sharing it would give both daemons the same
+    // identity and they would ignore each other's announcements as "self".
+    // A fresh root per spawn also means a restarted daemon has a new key.
+    static SPAWN_SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let seq = SPAWN_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let root = format!("/tmp/summit-it-{}-{}-{}", std::process::id(), ns, seq);
+    cmd.env("XDG_CONFIG_HOME", format!("{root}/config"));
+    cmd.env("XDG_DATA_HOME", format!("{root}/data"));
+    cmd.env("SUMMIT_CACHE", format!("{root}/cache"));
+    cmd.env("SUMMIT_CONFIG", format!("{root}/config.toml"));
+    if let Some(key) = private_key {
+        // Default keypair path is $XDG_CONFIG_HOME/summit/keypair.
+        let dir = format!("{root}/config/summit");
+        std::fs::create_dir_all(&dir).expect("create keypair dir");
+        std::fs::write(format!("{dir}/keypair"), key).expect("write keypair");
+    }
+    // File tests look for received files here (the pre-XDG default).
+    cmd.env("SUMMIT_FILE_TRANSFER__STORAGE_PATH", "/tmp/summit-received");
     for (k, v) in extra_env {
         cmd.env(k, v);
     }

@@ -7,7 +7,7 @@ fn test_ctl_status() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
 
     let mut node_a = spawn_daemon(NS_A, VETH_A, &[]);
@@ -73,7 +73,7 @@ fn test_ctl_services() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
 
     let mut node_a = spawn_daemon(NS_A, VETH_A, &[]);
@@ -117,7 +117,7 @@ fn test_ctl_services_disabled() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
 
     let env = [("SUMMIT_SERVICES__MESSAGING", "false")];
@@ -155,7 +155,7 @@ fn test_ctl_peers() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
 
     let mut node_a = spawn_daemon(NS_A, VETH_A, &[]);
@@ -217,7 +217,7 @@ fn test_ctl_cache() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
 
     let mut node_a = spawn_daemon(NS_A, VETH_A, &[]);
@@ -269,7 +269,7 @@ fn test_ctl_schema_list() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
 
     let mut node_a = spawn_daemon(NS_A, VETH_A, &[]);

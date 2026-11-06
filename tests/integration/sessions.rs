@@ -7,7 +7,7 @@ fn test_ctl_sessions_inspect() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
 
     let mut node_a = spawn_daemon(NS_A, VETH_A, &[]);
@@ -58,7 +58,7 @@ fn test_ctl_sessions_drop() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
 
     let mut node_a = spawn_daemon(NS_A, VETH_A, &[]);

@@ -13,7 +13,7 @@ fn test_link_down_and_recovery() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
 
     let mut node_a = spawn_daemon(NS_A, VETH_A, &[]);
@@ -62,7 +62,7 @@ fn test_handshake_under_packet_loss() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
 
     // Apply 50% loss before spawning
@@ -112,7 +112,7 @@ fn test_node_restart_mid_session() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
 
     let mut node_a = spawn_daemon(NS_A, VETH_A, &[]);
@@ -163,7 +163,7 @@ fn test_dead_session_pruned() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
 
     let mut node_a = spawn_daemon(NS_A, VETH_A, &[]);
@@ -205,7 +205,7 @@ fn test_invalid_udp_survives() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
 
     let mut node_a = spawn_daemon(NS_A, VETH_A, &[]);
@@ -248,7 +248,7 @@ fn test_port_block_graceful() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
 
     // Block all UDP on B before spawning
@@ -307,7 +307,7 @@ fn test_sender_killed_mid_transfer() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
     std::fs::remove_dir_all("/tmp/summit-received").ok();
 
@@ -363,7 +363,7 @@ fn test_receiver_killed_and_resend() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
     std::fs::remove_dir_all("/tmp/summit-received").ok();
 
@@ -435,7 +435,7 @@ fn test_concurrent_file_transfers() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
     std::fs::remove_dir_all("/tmp/summit-received").ok();
 
@@ -521,7 +521,7 @@ fn test_file_transfer_under_packet_loss() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
     std::fs::remove_dir_all("/tmp/summit-received").ok();
 
@@ -588,7 +588,7 @@ fn test_block_during_file_transfer() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
     std::fs::remove_dir_all("/tmp/summit-received").ok();
 
@@ -648,7 +648,7 @@ fn test_trust_then_check_buffered_messages() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
 
     // A does NOT auto-trust. B auto-trusts everyone.
@@ -733,7 +733,7 @@ fn test_compute_worker_crash() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
 
     let env = [
@@ -807,7 +807,7 @@ fn test_concurrent_compute_tasks() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
 
     let env = [
@@ -877,7 +877,7 @@ fn test_ctl_shutdown() {
         return;
     }
 
-    let _lock = DAEMON_LOCK.lock().unwrap();
+    let _lock = daemon_lock();
     cleanup_summitd();
 
     let mut node_a = spawn_daemon(NS_A, VETH_A, &[]);
