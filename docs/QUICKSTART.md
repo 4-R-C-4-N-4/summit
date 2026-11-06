@@ -1,8 +1,8 @@
 # Summit
 
-**Encrypted peer-to-peer file transfer over local networks**
+**Encrypted direct device-to-device transfer, no infrastructure**
 
-Summit is a high-performance P2P protocol built for reliable file transfer across local WiFi and Ethernet networks. It provides encrypted communication, automatic peer discovery, content-addressed caching, and multipath redundancy.
+Summit is a P2P protocol for devices that share a network link: a cable, Wi-Fi Direct, a hotspot, or a switch/access point that just forwards frames. Traffic is IPv6 link-local only and is never routed (see "What direct means" in the README). It provides encrypted communication, automatic peer discovery, content-addressed caching, and multipath redundancy.
 
 ---
 
@@ -162,7 +162,7 @@ sudo ./target/release/summitd wlp5s0
 ### Quick Troubleshooting
 
 **No peers discovered:**
-- Both machines on same WiFi network?
+- Both machines on the same link (same cable/switch/Wi-Fi AP, no client isolation)?
 - Firewall blocking UDP port 9000?
 - IPv6 enabled? (`sysctl net.ipv6.conf.all.disable_ipv6` should be 0)
 
@@ -529,7 +529,7 @@ List received files and in-progress transfers.
 
 ### Privacy Considerations
 
-- **Link-local only**: Traffic never leaves local network segment
+- **Link-local only**: Traffic never leaves the link between the devices; it is never routed
 - **Ephemeral ports**: Reduces fingerprinting
 - **Content-addressed**: No filename metadata in chunks (except in FileMetadata type)
 - **No persistent logs**: Daemon uses structured logging to stdout

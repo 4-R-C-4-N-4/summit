@@ -1,16 +1,55 @@
 # Summit
 
-Peer-to-peer encrypted communication for Linux. Direct device-to-device computing, messaging, and file transfer over IPv6 link-local -- no routers, no DNS, no infrastructure.
+Devices that can physically reach each other talk directly: messages, files
+and compute, end-to-end encrypted, with no servers, no accounts, no internet
+and no configuration.
+
+## What "direct" means
+
+Summit runs on a single network **link**: whatever carries frames between two
+machines. It speaks IPv6 link-local only, so its traffic is never routed:
+nothing above that link is involved, and nothing beyond it can reach in.
+
+The link can be:
+
+- **an Ethernet cable** between two machines: nothing in between at all
+- **Wi-Fi Direct / ad-hoc Wi-Fi**: two radios, no access point
+- **USB tethering or a phone hotspot**: the phone is the link
+- **a switch or Wi-Fi access point**: they forward frames between the machines
+  but take no part in Summit (a router never sees the traffic, and there is
+  no internet hop). Networks with "client isolation" (guest/public Wi-Fi)
+  refuse to forward between clients, and Summit can't work there.
+
+If two devices share a link, they find each other automatically. If they
+don't, Summit doesn't try to bridge the gap.
+
+## What Summit is not
+
+Summit stays small on purpose. It is **not**:
+
+- a way to reach devices across the internet (no relays, no NAT traversal)
+- an account system or identity provider: a device *is* its key pair
+- a social network, app store or plugin platform
+- a general-purpose overlay network
+
+New features have to fit "devices on the same link, talking directly".
 
 ## How It Works
 
-Devices discover each other via IPv6 multicast, establish encrypted sessions using [Noise_XX](http://www.noiseprotocol.org/), and exchange typed, content-addressed chunks. Trust is cryptographic: capability hashes identify services, content hashes verify data, and public keys verify peers.
+Devices announce themselves with IPv6 link-local multicast, establish
+encrypted sessions using [Noise_XX](http://www.noiseprotocol.org/), and
+exchange typed, content-addressed chunks. Trust is cryptographic: a peer's
+identity is the static key it proves during the handshake, content hashes
+verify data, and capability hashes identify services. If one side can't
+receive multicast (common on phones), the session still forms: whoever can
+hear the other initiates.
 
 ## Components
 
 | Crate | Description |
 |-------|-------------|
-| `summitd` | Daemon -- capability discovery, session management, chunk cache, network I/O |
+| `libsummit` | Embeddable node -- discovery, sessions, chunk transport, local API (what `summitd` and future mobile/desktop hosts run) |
+| `summitd` | Daemon -- thin CLI wrapper around `libsummit` |
 | `summit-ctl` | CLI tool -- inspect status, manage trust, send files |
 | `summit-core` | Wire format, cryptography (Noise_XX, BLAKE3), message types |
 | `summit-services` | Service layer -- cache, trust registry, QoS, file transfer |
@@ -49,11 +88,13 @@ docker run -it --rm --privileged --network host ghcr.io/ivy/summit:latest
 
 ## Usage
 
-Start the daemon on a network interface:
+Start the daemon on the interface for the link you want to use (no root
+needed):
 
 ```bash
-sudo summitd eth0        # wired
-sudo summitd wlp5s0      # wireless
+summitd eth0             # cable / switch
+summitd wlp5s0           # Wi-Fi
+summitd p2p-wlp5s0-0     # Wi-Fi Direct group interface
 ```
 
 Control with `summit-ctl`:
