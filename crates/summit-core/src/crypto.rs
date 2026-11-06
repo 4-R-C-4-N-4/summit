@@ -201,6 +201,7 @@ impl NoiseInitiator {
             .map_err(CryptoError::Noise)?;
         msg3.truncate(len);
 
+        let remote_static = remote_static_key(&self.state)?;
         let transport = self
             .state
             .into_stateless_transport_mode()
@@ -210,6 +211,7 @@ impl NoiseInitiator {
         Ok((
             Session {
                 session_id,
+                remote_static,
                 transport,
                 send_nonce: 0,
                 recv_window: ReplayWindow::new(),
@@ -300,6 +302,7 @@ impl ResponderPending {
             .read_message(msg3, &mut payload)
             .map_err(CryptoError::Noise)?;
 
+        let remote_static = remote_static_key(&self.state)?;
         let transport = self
             .state
             .into_stateless_transport_mode()
@@ -308,11 +311,24 @@ impl ResponderPending {
 
         Ok(Session {
             session_id,
+            remote_static,
             transport,
             send_nonce: 0,
             recv_window: ReplayWindow::new(),
         })
     }
+}
+
+/// Extract the peer's static public key once the handshake has revealed it.
+///
+/// This is the ONLY authenticated statement of peer identity — capability
+/// announcements are unauthenticated multicast and must never be trusted on
+/// their own.
+fn remote_static_key(state: &HandshakeState) -> Result<[u8; 32], CryptoError> {
+    state
+        .get_remote_static()
+        .and_then(|k| <[u8; 32]>::try_from(k).ok())
+        .ok_or(CryptoError::MissingRemoteStatic)
 }
 
 // ── Replay Window ─────────────────────────────────────────────────────────────
@@ -406,6 +422,8 @@ impl ReplayWindow {
 /// Wrap in Arc<Mutex<Session>> for shared use across tasks.
 pub struct Session {
     pub session_id: [u8; 32],
+    /// Peer's static X25519 public key, proven by the Noise_XX handshake.
+    pub remote_static: [u8; 32],
     transport: StatelessTransportState,
     send_nonce: u64,
     recv_window: ReplayWindow,
@@ -475,6 +493,9 @@ pub enum CryptoError {
 
     #[error("replayed or too-old nonce")]
     Replay,
+
+    #[error("handshake finished without a remote static key")]
+    MissingRemoteStatic,
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -608,7 +629,7 @@ mod tests {
 
         let responder = NoiseResponder::new(&rkp).unwrap();
         let r_nonce = *responder.nonce();
-        let (pending, msg2) = responder.respond(&msg1, &i_nonce).unwrap();
+        let (_pending, msg2) = responder.respond(&msg1, &i_nonce).unwrap();
         println!("msg2 size: {}", msg2.len());
 
         let (_session, msg3) = initiator.finish(&msg2, &r_nonce).unwrap();
@@ -619,6 +640,23 @@ mod tests {
     fn noise_handshake_completes() {
         let (i_session, r_session) = completed_sessions();
         assert_eq!(i_session.session_id, r_session.session_id);
+    }
+
+    #[test]
+    fn noise_handshake_exposes_authenticated_remote_static() {
+        let ikp = Keypair::generate();
+        let rkp = Keypair::generate();
+
+        let (initiator, msg1) = NoiseInitiator::new(&ikp).unwrap();
+        let i_nonce = *initiator.nonce();
+        let responder = NoiseResponder::new(&rkp).unwrap();
+        let r_nonce = *responder.nonce();
+        let (pending, msg2) = responder.respond(&msg1, &i_nonce).unwrap();
+        let (i_session, msg3) = initiator.finish(&msg2, &r_nonce).unwrap();
+        let r_session = pending.finish(&msg3).unwrap();
+
+        assert_eq!(i_session.remote_static, rkp.public);
+        assert_eq!(r_session.remote_static, ikp.public);
     }
 
     #[test]

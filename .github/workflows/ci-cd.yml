@@ -43,11 +43,40 @@ jobs:
           cargo build -p summit-core
           cargo build -p summit-services
           cargo build -p summit-api
+          cargo build -p libsummit
           cargo build -p summitd
           cargo build -p summit-ctl
 
       - name: Run unit tests
         run: cargo test --workspace --lib
+
+  # Compile + unit-test on the other desktop OSes. Real networking is only
+  # exercised on Linux (integration suite) and on hardware (android-smoke.sh).
+  portability:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build daemon and CLI
+        run: cargo build -p summitd -p summit-ctl
+      - name: Unit tests
+        run: cargo test --workspace --lib
+
+  android:
+    name: Build (Android arm64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - name: Cross-compile with the runner's NDK
+        run: ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME" scripts/build-android.sh
 
   docker:
     name: Build Docker Image

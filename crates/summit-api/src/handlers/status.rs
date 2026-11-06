@@ -12,6 +12,8 @@ use super::ApiState;
 
 #[derive(Serialize)]
 pub struct StatusResponse {
+    /// This node's own public key (hex), so clients don't have to scrape logs.
+    pub public_key: String,
     pub sessions: Vec<SessionInfo>,
     pub cache: CacheInfo,
     pub peers_discovered: usize,
@@ -61,6 +63,7 @@ pub async fn handle_status(State(state): State<ApiState>) -> Json<StatusResponse
     let peers_discovered = state.registry.len();
 
     Json(StatusResponse {
+        public_key: hex::encode(state.keypair.public),
         sessions,
         cache,
         peers_discovered,
@@ -86,6 +89,9 @@ pub struct PeerInfo {
     pub last_seen_secs: u64,
     pub trust_level: String,
     pub buffered_chunks: usize,
+    /// "multicast" if we heard its announcements, "handshake" if we only know
+    /// it because it connected to us (its multicast isn't reaching us).
+    pub discovered_via: &'static str,
 }
 
 pub async fn handle_peers(State(state): State<ApiState>) -> Json<PeersResponse> {
@@ -110,6 +116,11 @@ pub async fn handle_peers(State(state): State<ApiState>) -> Json<PeersResponse> 
                 last_seen_secs: p.last_seen.elapsed().as_secs(),
                 trust_level: format!("{:?}", trust_level),
                 buffered_chunks,
+                discovered_via: if p.announced {
+                    "multicast"
+                } else {
+                    "handshake"
+                },
             }
         })
         .collect();

@@ -10,5 +10,5 @@ pub mod recovery;
 pub mod send;
 pub mod send_worker;
 
-// Re-export from summit-services for convenience within summitd
+// Re-export from summit-services for convenience within libsummit
 pub use summit_services::{IncomingChunk, OutgoingChunk};

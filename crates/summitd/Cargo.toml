@@ -4,22 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-summit-core     = { path = "../summit-core" }
-summit-services = { path = "../summit-services" }
-summit-api      = { path = "../summit-api" }
+libsummit          = { path = "../libsummit" }
+summit-core        = { path = "../summit-core" }
 tokio              = { workspace = true }
-bytes              = { workspace = true }
-socket2            = "0.5"
-dashmap            = { workspace = true }
 anyhow             = { workspace = true }
-thiserror          = { workspace = true }
 tracing            = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-zerocopy           = { workspace = true }
-libc               = { workspace = true }
-hex                = { workspace = true }
-memmap2            = { workspace = true }
-futures            = "0.3"
-serde              = { workspace = true }
-serde_json         = { workspace = true }
-blake3             = { workspace = true }

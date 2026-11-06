@@ -98,13 +98,3 @@ fn make_multicast_socket(interface_index: u32) -> Result<socket2::Socket> {
         .context("IPV6_MULTICAST_HOPS")?;
     Ok(socket)
 }
-
-/// Get the OS interface index for a named network interface.
-pub fn if_index(name: &str) -> Result<u32> {
-    let name_cstr = std::ffi::CString::new(name).context("interface name contains null byte")?;
-    let index = unsafe { libc::if_nametoindex(name_cstr.as_ptr()) };
-    if index == 0 {
-        anyhow::bail!("interface '{}' not found", name);
-    }
-    Ok(index)
-}

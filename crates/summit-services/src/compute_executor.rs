@@ -205,6 +205,7 @@ pub async fn run(
 
 /// Apply resource limits (RLIMIT_AS for memory, RLIMIT_CPU for CPU time)
 /// via `pre_exec`. Runs after fork, before exec — only affects the child.
+#[cfg(unix)]
 fn apply_resource_limits(
     cmd: &mut tokio::process::Command,
     max_memory_bytes: u64,
@@ -245,10 +246,39 @@ fn apply_resource_limits(
     }
 }
 
+/// rlimits are a Unix concept. Elsewhere, limits are not enforced — say so
+/// loudly rather than pretending.
+#[cfg(not(unix))]
+fn apply_resource_limits(
+    _cmd: &mut tokio::process::Command,
+    max_memory_bytes: u64,
+    max_cpu_cores: u32,
+) {
+    if max_memory_bytes > 0 || max_cpu_cores > 0 {
+        tracing::warn!("compute resource limits are not supported on this platform; ignoring");
+    }
+}
+
+/// Command that runs a shell string on this platform.
+fn shell_command(script: &str) -> tokio::process::Command {
+    #[cfg(windows)]
+    {
+        let mut cmd = tokio::process::Command::new("cmd");
+        cmd.args(["/C", script]);
+        cmd
+    }
+    #[cfg(not(windows))]
+    {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", script]);
+        cmd
+    }
+}
+
 /// Execute a task payload.
 ///
 /// Supported formats:
-///   `{"run": "hostnamectl > out.txt"}`  — shell command (via `sh -c`)
+///   `{"run": "hostnamectl > out.txt"}`  — shell command (`sh -c`; `cmd /C` on Windows)
 ///   `{"cmd": "echo", "args": ["hi"]}`  — direct exec (no shell)
 async fn execute_task(
     payload: &serde_json::Value,
@@ -263,8 +293,8 @@ async fn execute_task(
 
     let output = if let Some(run) = payload.get("run").and_then(|v| v.as_str()) {
         // Shell mode: pipes, redirections, globs all work.
-        let mut cmd = tokio::process::Command::new("sh");
-        cmd.args(["-c", run]).current_dir(task_dir);
+        let mut cmd = shell_command(run);
+        cmd.current_dir(task_dir);
         apply_resource_limits(&mut cmd, max_memory_bytes, max_cpu_cores);
         cmd.output()
             .await

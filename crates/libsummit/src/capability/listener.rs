@@ -4,6 +4,7 @@
 //! datagrams from nearby peers. Valid announcements are upserted into the
 //! peer registry. A separate expiry task removes stale entries.
 
+use std::collections::HashSet;
 use std::net::{Ipv6Addr, SocketAddrV6};
 use std::time::Duration;
 
@@ -13,7 +14,7 @@ use tokio::net::UdpSocket;
 use zerocopy::FromBytes;
 
 use summit_core::wire::{CapabilityAnnouncement, MULTICAST_ADDR_V6, PEER_TTL_SECS};
-use summit_services::{PeerEntry, PeerRegistry};
+use summit_services::{PeerEntry, PeerRegistry, SessionTable};
 
 /// UDP port on which capability announcements are received.
 pub const ANNOUNCE_PORT: u16 = 9000;
@@ -96,8 +97,12 @@ pub async fn listener_loop(
 
 /// Remove registry entries that have not been refreshed within the TTL.
 ///
+/// Peers with a live session are kept even if we stopped hearing their
+/// announcements: with one-way multicast we may never hear them, and the
+/// session layer already detects dead peers (receive timeout) on its own.
+///
 /// Runs forever — cancel by dropping the task handle.
-pub async fn expiry_loop(registry: PeerRegistry) -> Result<()> {
+pub async fn expiry_loop(registry: PeerRegistry, sessions: SessionTable) -> Result<()> {
     let ttl = Duration::from_secs(PEER_TTL_SECS);
     let check_interval = Duration::from_secs(1);
     let mut interval = tokio::time::interval(check_interval);
@@ -105,8 +110,12 @@ pub async fn expiry_loop(registry: PeerRegistry) -> Result<()> {
     loop {
         interval.tick().await;
 
+        let connected: HashSet<[u8; 32]> = sessions
+            .iter()
+            .map(|s| s.value().meta.peer_pubkey)
+            .collect();
         let before = registry.len();
-        registry.retain(|_, entry| entry.last_seen.elapsed() < ttl);
+        registry.retain(|key, entry| entry.last_seen.elapsed() < ttl || connected.contains(key));
         let after = registry.len();
 
         if before != after {

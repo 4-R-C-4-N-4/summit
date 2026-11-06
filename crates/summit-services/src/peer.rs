@@ -35,6 +35,12 @@ pub struct PeerEntry {
 
     /// Last time any datagram arrived from this peer.
     pub last_seen: Instant,
+
+    /// True once we have heard this peer's multicast announcement. False for
+    /// peers we only know because they completed a handshake with us — which
+    /// happens when our inbound multicast is filtered (Android Wi-Fi without
+    /// a MulticastLock) but theirs reaches us... or the other way round.
+    pub announced: bool,
 }
 
 impl PeerEntry {
@@ -55,7 +61,33 @@ impl PeerEntry {
             services,
             expected_service_count: ann.service_count,
             last_seen: Instant::now(),
+            announced: true,
         }
+    }
+
+    /// Create from a completed handshake with a peer we never heard announce.
+    /// The key is proven by Noise; the address and session port are where
+    /// the handshake came from. Services are unknown until it announces.
+    pub fn from_handshake(addr: Ipv6Addr, public_key: [u8; 32], session_port: u16) -> Self {
+        Self {
+            addr,
+            public_key,
+            session_port,
+            version: 1,
+            services: HashMap::new(),
+            expected_service_count: 0,
+            last_seen: Instant::now(),
+            announced: false,
+        }
+    }
+
+    /// Record a completed handshake: the peer has proven it holds this key
+    /// and is reachable at `addr`, which overrides whatever an (unauthenticated)
+    /// announcement claimed.
+    pub fn confirm_handshake(&mut self, addr: Ipv6Addr, session_port: u16) {
+        self.addr = addr;
+        self.session_port = session_port;
+        self.last_seen = Instant::now();
     }
 
     /// Update from a subsequent announcement datagram.
@@ -66,6 +98,7 @@ impl PeerEntry {
         self.session_port = ann.session_port;
         self.expected_service_count = ann.service_count;
         self.last_seen = Instant::now();
+        self.announced = true;
     }
 
     /// Have we received all announced services?
@@ -101,6 +134,37 @@ pub fn new_registry() -> PeerRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn handshake_entry_is_not_announced_until_it_announces() {
+        let addr: Ipv6Addr = "fe80::1".parse().unwrap();
+        let mut entry = PeerEntry::from_handshake(addr, [7; 32], 4000);
+        assert!(!entry.announced);
+        assert!(entry.services.is_empty());
+
+        let ann = summit_core::wire::CapabilityAnnouncement {
+            service_hash: [1; 32],
+            public_key: [7; 32],
+            version: 1,
+            session_port: 4000,
+            chunk_port: 0,
+            contract: 0,
+            flags: 0,
+            service_count: 1,
+            service_index: 0,
+        };
+        entry.update_from_announcement(&ann);
+        assert!(entry.announced);
+        assert!(entry.has_service(&[1; 32]));
+    }
+
+    #[test]
+    fn confirm_handshake_overrides_announced_address() {
+        let mut entry = PeerEntry::from_handshake("fe80::1".parse().unwrap(), [7; 32], 4000);
+        entry.confirm_handshake("fe80::2".parse().unwrap(), 5000);
+        assert_eq!(entry.addr, "fe80::2".parse::<Ipv6Addr>().unwrap());
+        assert_eq!(entry.session_port, 5000);
+    }
 
     #[test]
     fn new_registry_creates_empty() {

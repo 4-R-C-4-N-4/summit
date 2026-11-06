@@ -10,7 +10,7 @@ use tokio::time::Instant;
 const DELIVERY_TTL: Duration = Duration::from_secs(120);
 
 /// Tracks chunk deliveries for multipath analysis.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct DeliveryTracker {
     // content_hash -> Vec<(peer_addr, received_at)>
     #[allow(clippy::type_complexity)]

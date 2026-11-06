@@ -189,23 +189,33 @@ impl Default for ComputeSettings {
 // ── Path helpers ──────────────────────────────────────────────────────────────
 
 fn config_dir() -> PathBuf {
-    std::env::var("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| dirs_or_home().join(".config"))
+    xdg_dir("XDG_CONFIG_HOME")
+        .unwrap_or_else(|| dirs_or_home().join(".config"))
         .join("summit")
 }
 
 pub fn data_dir() -> PathBuf {
-    std::env::var("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| dirs_or_home().join(".local").join("share"))
+    xdg_dir("XDG_DATA_HOME")
+        .unwrap_or_else(|| dirs_or_home().join(".local").join("share"))
         .join("summit")
 }
 
-fn dirs_or_home() -> PathBuf {
-    std::env::var("HOME")
+/// An XDG base dir from the environment. Per the XDG spec, an empty or
+/// relative value is invalid and must be ignored (otherwise state lands in
+/// `./summit` relative to wherever the daemon was started).
+fn xdg_dir(var: &str) -> Option<PathBuf> {
+    std::env::var_os(var)
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/tmp"))
+        .filter(|p| p.is_absolute())
+}
+
+fn dirs_or_home() -> PathBuf {
+    // HOME on Unix, USERPROFILE on Windows. Embedded hosts (Android) usually
+    // have neither and should pass explicit paths or set XDG_*_HOME.
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
 }
 
 // ── Errors ────────────────────────────────────────────────────────────────────
@@ -271,6 +281,11 @@ impl SummitConfig {
                 self.network.session_port = p;
             }
         }
+        if let Ok(v) = std::env::var("SUMMIT_NETWORK__API_PORT") {
+            if let Ok(p) = v.parse() {
+                self.network.api_port = p;
+            }
+        }
         if let Ok(v) = std::env::var("SUMMIT_TRUST__AUTO_TRUST") {
             self.trust.auto_trust = v == "true" || v == "1";
         }
@@ -295,6 +310,21 @@ impl SummitConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn xdg_dir_ignores_empty_and_relative() {
+        // Unique var names: tests run in parallel and share the environment.
+        std::env::set_var("SUMMIT_TEST_XDG_EMPTY", "");
+        std::env::set_var("SUMMIT_TEST_XDG_REL", "summit-rel");
+        std::env::set_var("SUMMIT_TEST_XDG_ABS", "/var/lib/x");
+        assert_eq!(xdg_dir("SUMMIT_TEST_XDG_EMPTY"), None);
+        assert_eq!(xdg_dir("SUMMIT_TEST_XDG_REL"), None);
+        assert_eq!(
+            xdg_dir("SUMMIT_TEST_XDG_ABS"),
+            Some(PathBuf::from("/var/lib/x"))
+        );
+        assert_eq!(xdg_dir("SUMMIT_TEST_XDG_UNSET_NEVER"), None);
+    }
 
     #[test]
     fn default_config_has_expected_services() {

@@ -14,10 +14,12 @@ use zerocopy::{AsBytes, FromBytes};
 
 use summit_core::crypto::{Keypair, NoiseResponder};
 use summit_core::wire::{Contract, HandshakeComplete, HandshakeInit, HandshakeResponse};
-use summit_services::{ActiveSession, PeerRegistry, SessionMeta, SessionTable, TokenBucket};
+use summit_services::{
+    ActiveSession, PeerEntry, PeerRegistry, SessionMeta, SessionTable, TokenBucket,
+};
 
-use super::default_active_services;
 use super::state::SharedTracker;
+use super::{default_active_services, should_yield_to_incoming};
 
 pub struct SessionListener {
     socket: Arc<UdpSocket>,
@@ -115,12 +117,21 @@ impl SessionListener {
 
         tracing::debug!(peer_addr = %peer_addr, "received HandshakeInit");
 
-        // Deduplicate
+        // Deduplicate, and resolve simultaneous initiation.
         {
-            let t = self.tracker.lock().await;
-            if t.has_initiator(&peer_ip) || t.has_initiator_waiting(&peer_ip) {
-                tracing::debug!(%peer_addr, "already initiating to this peer, ignoring HandshakeInit");
+            let mut t = self.tracker.lock().await;
+            if t.has_initiator_waiting(&peer_ip) {
+                tracing::debug!(%peer_addr, "our handshake already completed, ignoring HandshakeInit");
                 return;
+            }
+            if let Some(dialing) = t.initiator_peer_key(&peer_ip) {
+                if should_yield_to_incoming(&self.keypair.public, &dialing) {
+                    tracing::debug!(%peer_addr, "simultaneous HandshakeInit: yielding to peer's attempt");
+                    t.remove_initiator(&peer_ip);
+                } else {
+                    tracing::debug!(%peer_addr, "simultaneous HandshakeInit: ours takes precedence, ignoring");
+                    return;
+                }
             }
             if t.has_responder(&peer_ip) || t.has_responder_waiting(&peer_ip) {
                 tracing::debug!(%peer_addr, "duplicate HandshakeInit, ignoring");
@@ -180,26 +191,19 @@ impl SessionListener {
         }
         tracing::debug!(peer_addr = %peer_addr, "sent HandshakeResponse");
 
-        // Look up peer's public key from registry
-        let peer_pubkey = match self
+        // Which announced key lives at this address, if any. Logging only:
+        // nothing is proven yet, and the initiator may never have been heard
+        // at all (its multicast doesn't reach us). Identity is settled by the
+        // handshake in handle_complete.
+        let announced_pubkey = self
             .registry
             .iter()
             .find(|entry| entry.value().addr == peer_ip)
-            .map(|entry| *entry.key())
-        {
-            Some(pk) => pk,
-            None => {
-                tracing::warn!(
-                    %peer_addr,
-                    "HandshakeInit from peer not yet in registry, deferring"
-                );
-                return;
-            }
-        };
+            .map(|entry| *entry.key());
 
         self.tracker.lock().await.add_responder(
             peer_ip,
-            peer_pubkey,
+            announced_pubkey,
             pending,
             local_chunk_port,
             chunk_socket,
@@ -242,6 +246,19 @@ impl SessionListener {
                 return;
             }
         };
+
+        // The pubkey we dialed came from an unauthenticated announcement.
+        // Only proceed if the responder actually proved ownership of it.
+        if session.remote_static != state.peer_pubkey {
+            tracing::warn!(
+                %peer_addr,
+                announced = hex::encode(&state.peer_pubkey[..8]),
+                proven = hex::encode(&session.remote_static[..8]),
+                "responder static key does not match announced key, aborting"
+            );
+            return;
+        }
+        record_proven_peer(&self.registry, state.peer_pubkey, peer_ip, peer_addr.port());
 
         // Send HandshakeComplete
         let complete = HandshakeComplete {
@@ -308,6 +325,27 @@ impl SessionListener {
                 return;
             }
         };
+
+        // Identity is the key proven in the handshake, never the registry
+        // entry that happened to match this IP (announcements are forgeable).
+        let peer_pubkey = session.remote_static;
+        if peer_pubkey == self.keypair.public {
+            tracing::warn!(%peer_addr, "handshake proved our own key (reflected?), aborting");
+            return;
+        }
+        if let Some(guess) = state.announced_pubkey.filter(|g| *g != peer_pubkey) {
+            tracing::warn!(
+                %peer_addr,
+                announced = hex::encode(&guess[..8]),
+                proven = hex::encode(&peer_pubkey[..8]),
+                "address was announced under a different key; trusting the handshake"
+            );
+        }
+        // The peer just proved it holds this key and is at this address
+        // (the HandshakeInit came from its session socket). Record that, so
+        // a peer whose announcements we can't hear is still known, and a
+        // forged announcement can't pin its key to the wrong address.
+        record_proven_peer(&self.registry, peer_pubkey, peer_ip, peer_addr.port());
         tracing::debug!(peer_addr = %peer_addr, "noise handshake complete (responder), waiting for chunk_port");
 
         self.tracker.lock().await.add_responder_waiting_chunk(
@@ -315,7 +353,7 @@ impl SessionListener {
             session,
             state.chunk_socket,
             state.chunk_socket_port,
-            state.peer_pubkey,
+            peer_pubkey,
         );
     }
 
@@ -427,4 +465,19 @@ impl SessionListener {
             tracing::debug!(%peer_addr, len = data.len(), "encrypted message from unknown peer, ignoring");
         }
     }
+}
+
+/// Upsert a registry entry for a peer whose key a handshake just proved.
+fn record_proven_peer(registry: &PeerRegistry, pubkey: [u8; 32], ip: Ipv6Addr, session_port: u16) {
+    registry
+        .entry(pubkey)
+        .and_modify(|e| e.confirm_handshake(ip, session_port))
+        .or_insert_with(|| {
+            tracing::info!(
+                peer = hex::encode(&pubkey[..8]),
+                %ip,
+                "peer learned from handshake: its announcements are not reaching us"
+            );
+            PeerEntry::from_handshake(ip, pubkey, session_port)
+        });
 }

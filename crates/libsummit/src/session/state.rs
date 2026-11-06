@@ -14,6 +14,7 @@ use summit_core::crypto::{NoiseInitiator, ResponderPending, Session};
 pub type SharedTracker = Arc<Mutex<HandshakeTracker>>;
 
 /// Tracks in-progress handshakes from multiple peers.
+#[derive(Default)]
 pub struct HandshakeTracker {
     initiators: HashMap<Ipv6Addr, InitiatorState>,
     responders: HashMap<Ipv6Addr, ResponderState>,
@@ -34,7 +35,9 @@ pub struct ResponderState {
     pub started_at: Instant,
     pub chunk_socket: Arc<UdpSocket>,
     pub chunk_socket_port: u16,
-    pub peer_pubkey: [u8; 32],
+    /// Key announced from the initiator's address, if we heard one. A guess
+    /// for logging only — identity comes from the completed handshake.
+    pub announced_pubkey: Option<[u8; 32]>,
 }
 
 pub struct InitiatorWaiting {
@@ -91,7 +94,7 @@ impl HandshakeTracker {
     pub fn add_responder(
         &mut self,
         peer_ip: Ipv6Addr,
-        peer_pubkey: [u8; 32],
+        announced_pubkey: Option<[u8; 32]>,
         pending: ResponderPending,
         chunk_port: u16,
         chunk_socket: Arc<UdpSocket>,
@@ -103,7 +106,7 @@ impl HandshakeTracker {
                 started_at: Instant::now(),
                 chunk_socket,
                 chunk_socket_port: chunk_port,
-                peer_pubkey,
+                announced_pubkey,
             },
         );
     }
@@ -174,6 +177,19 @@ impl HandshakeTracker {
 
     pub fn has_initiator(&self, peer_ip: &Ipv6Addr) -> bool {
         self.initiators.contains_key(peer_ip)
+    }
+
+    /// Key we are dialing at this address, if we have a handshake in flight.
+    pub fn initiator_peer_key(&self, peer_ip: &Ipv6Addr) -> Option<[u8; 32]> {
+        self.initiators.get(peer_ip).map(|s| s.peer_pubkey)
+    }
+
+    /// Any handshake in progress with this address, in either role.
+    pub fn in_progress(&self, peer_ip: &Ipv6Addr) -> bool {
+        self.has_initiator(peer_ip)
+            || self.has_initiator_waiting(peer_ip)
+            || self.has_responder(peer_ip)
+            || self.has_responder_waiting(peer_ip)
     }
 
     pub fn has_initiator_waiting(&self, peer_ip: &Ipv6Addr) -> bool {

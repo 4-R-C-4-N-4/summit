@@ -221,7 +221,7 @@ async fn handle_recovery(
                             return;
                         }
                         retransmitted += 1;
-                        if retransmitted % batch_size == 0 {
+                        if retransmitted.is_multiple_of(batch_size) {
                             tokio::time::sleep(std::time::Duration::from_millis(batch_delay_ms))
                                 .await;
                         }

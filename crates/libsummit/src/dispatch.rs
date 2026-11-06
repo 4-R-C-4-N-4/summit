@@ -7,6 +7,7 @@ use summit_core::wire::{ChunkHeader, ServiceHash};
 use summit_services::ChunkService;
 
 /// Maps schema_ids to services and dispatches incoming chunks.
+#[derive(Default)]
 pub struct ServiceDispatcher {
     /// schema_id -> service. Multiple schema_ids can map to one service.
     schema_to_service: HashMap<[u8; 32], Arc<dyn ChunkService>>,
