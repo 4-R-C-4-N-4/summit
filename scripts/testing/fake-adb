@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Minimal stand-in for `adb` that treats a network namespace as "the phone".
+#
+# Used only by scripts/android-smoke-dryrun.sh to exercise android-smoke.sh's
+# logic (stage ordering, API calls, diagnosis) before you spend time with a
+# real device. It proves the SCRIPT works; it proves nothing about Android.
+#
+# Env: FAKE_ADB_NETNS  namespace playing the phone (default summit-b)
+#      FAKE_ADB_STATE  dir for forwarder pids (default $TMPDIR/fake-adb)
+set -euo pipefail
+
+NS="${FAKE_ADB_NETNS:-summit-b}"
+STATE="${FAKE_ADB_STATE:-${TMPDIR:-/tmp}/fake-adb}"
+mkdir -p "$STATE"
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+    get-state) echo device ;;
+    shell)
+        script="$*"
+        case "$script" in
+            getprop\ ro.product.model*) echo "fake-phone ($NS)" ;;
+            getprop\ ro.build.version.release*) echo "n/a" ;;
+            input\ *) : ;;  # no screen to turn off
+            *) ip netns exec "$NS" sh -c "$script" ;;
+        esac
+        ;;
+    push)
+        dest="${*: -1}"
+        set -- "${@:1:$#-1}"
+        mkdir -p "$dest"
+        cp "$@" "$dest"
+        ;;
+    pull) cp "$1" "$2" ;;
+    forward)
+        if [[ "$1" == "--remove" ]]; then
+            port="${2#tcp:}"
+            [[ -f "$STATE/fwd-$port" ]] && kill "$(cat "$STATE/fwd-$port")" 2>/dev/null
+            rm -f "$STATE/fwd-$port"
+        else
+            local_port="${1#tcp:}" remote_port="${2#tcp:}"
+            socat "TCP-LISTEN:$local_port,bind=127.0.0.1,fork,reuseaddr" \
+                "EXEC:ip netns exec $NS socat STDIO TCP4\\:127.0.0.1\\:$remote_port\\,ai-addrconfig=0" \
+                >/dev/null 2>&1 &
+            echo $! >"$STATE/fwd-$local_port"
+            sleep 0.3
+        fi
+        ;;
+    *) echo "fake-adb: unsupported command '$cmd'" >&2; exit 1 ;;
+esac
