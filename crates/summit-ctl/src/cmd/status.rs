@@ -94,7 +94,7 @@ pub async fn cmd_status(port: u16) -> Result<()> {
             };
             println!("  ┌─ {} {}", trust_icon, &s.session_id[..16]);
             println!("  │  peer     : {}", s.peer);
-            println!("  │  pubkey   : {}", &s.peer_pubkey);
+            println!("  │  pubkey   : {}", s.peer_pubkey);
             println!("  │  contract : {}", s.contract);
             println!("  │  trust    : {}", s.trust_level);
             println!("  └─ uptime   : {}s", s.established_secs);
@@ -125,7 +125,7 @@ pub async fn cmd_peers(port: u16) -> Result<()> {
 
         let complete_marker = if p.is_complete { "" } else { " (incomplete)" };
 
-        println!("  ┌─ {} {}", trust_icon, &p.public_key);
+        println!("  ┌─ {} {}", trust_icon, p.public_key);
         println!("  │  addr         : {}", p.addr);
         println!("  │  session port : {}", p.session_port);
         println!(

@@ -66,7 +66,7 @@ pub async fn cmd_trust_list(port: u16) -> Result<()> {
             "Blocked" => "✗",
             _ => "?",
         };
-        println!("  {} {} — {}", icon, &rule.public_key, rule.level);
+        println!("  {} {} — {}", icon, rule.public_key, rule.level);
     }
 
     Ok(())

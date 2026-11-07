@@ -109,7 +109,7 @@ jobs:
       - name: Build daemon and CLI
         run: cargo build -p summitd -p summit-ctl
       - name: Unit tests
-        run: cargo test --workspace --lib
+        run: cargo test --workspace --lib --no-fail-fast
 
   android:
     name: Build (Android arm64)

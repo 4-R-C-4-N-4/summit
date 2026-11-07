@@ -314,15 +314,14 @@ mod tests {
     #[test]
     fn xdg_dir_ignores_empty_and_relative() {
         // Unique var names: tests run in parallel and share the environment.
+        // An absolute path on every OS ("/var/lib/x" is relative on Windows).
+        let abs = std::env::temp_dir().join("summit-xdg-abs");
         std::env::set_var("SUMMIT_TEST_XDG_EMPTY", "");
         std::env::set_var("SUMMIT_TEST_XDG_REL", "summit-rel");
-        std::env::set_var("SUMMIT_TEST_XDG_ABS", "/var/lib/x");
+        std::env::set_var("SUMMIT_TEST_XDG_ABS", &abs);
         assert_eq!(xdg_dir("SUMMIT_TEST_XDG_EMPTY"), None);
         assert_eq!(xdg_dir("SUMMIT_TEST_XDG_REL"), None);
-        assert_eq!(
-            xdg_dir("SUMMIT_TEST_XDG_ABS"),
-            Some(PathBuf::from("/var/lib/x"))
-        );
+        assert_eq!(xdg_dir("SUMMIT_TEST_XDG_ABS"), Some(abs));
         assert_eq!(xdg_dir("SUMMIT_TEST_XDG_UNSET_NEVER"), None);
     }
 
