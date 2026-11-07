@@ -36,7 +36,7 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy
-        run: cargo clippy --workspace --
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Build all crates
         run: |
@@ -49,6 +49,50 @@ jobs:
 
       - name: Run unit tests
         run: cargo test --workspace --lib
+
+  # Two real daemons over a veth pair in disposable network namespaces,
+  # with fault injection (loss, blackouts, link down, multicast filtering).
+  # No sudo inside the suite; sudo here only relaxes the runner's sandbox.
+  integration:
+    name: Integration (rootless netns)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-integration-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Prepare runner
+        run: |
+          # Ubuntu 24.04 blocks unprivileged user namespaces via AppArmor.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          # The cloud kernel ships netem in linux-modules-extra.
+          sudo modprobe sch_netem || {
+            sudo apt-get update
+            sudo apt-get install -y "linux-modules-extra-$(uname -r)"
+            sudo modprobe sch_netem
+          }
+          # Unprivileged namespaces can't autoload modules: preload them.
+          for m in veth ip6_tables ip6table_filter nf_tables nft_compat \
+                   xt_statistic ip6t_frag; do
+            sudo modprobe "$m" || echo "warning: module $m unavailable"
+          done
+          sudo apt-get install -y socat jq
+          unshare -r -n true   # fail fast if namespaces are still blocked
+
+      - name: Integration suite
+        run: scripts/integration-rootless.sh -- --test-threads=1
+
+      - name: Android smoke script dry run (fake phone)
+        run: |
+          scripts/android-smoke-dryrun.sh
+          scripts/android-smoke-dryrun.sh --filter-multicast
 
   # Compile + unit-test on the other desktop OSes. Real networking is only
   # exercised on Linux (integration suite) and on hardware (android-smoke.sh).

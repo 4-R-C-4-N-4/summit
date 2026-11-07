@@ -288,11 +288,16 @@ fn test_ctl_schema_list() {
         }
 
         let names: Vec<&str> = schemas.iter().filter_map(|s| s["name"].as_str()).collect();
-        assert!(
-            names.iter().any(|n| n.contains("File")),
-            "expected File schema: {:?}",
-            names
-        );
+        for expected in [
+            "summit.file.data",
+            "summit.file.metadata",
+            "summit.messaging",
+        ] {
+            assert!(
+                names.contains(&expected),
+                "missing schema {expected}: {names:?}"
+            );
+        }
 
         // CLI
         let out = ctl(NS_A, &["schema", "list"])?;

@@ -1,6 +1,8 @@
+use crate::fault::wait_for_condition;
 use crate::*;
 
-/// Simple compute task: submit via API, verify on both sides, check CLI.
+/// Simple compute task end to end: submit via API, B receives and runs it,
+/// A gets the result back, CLI lists it.
 #[test]
 fn test_compute_task_simple() {
     if !skip_unless_ready() {
@@ -33,7 +35,7 @@ fn test_compute_task_simple() {
         // Submit task via API
         let body = serde_json::json!({
             "to": pubkey_b,
-            "payload": { "op": "echo", "input": "hello from A" }
+            "payload": { "cmd": "echo", "args": ["hello from A"] }
         })
         .to_string();
 
@@ -52,14 +54,31 @@ fn test_compute_task_simple() {
         assert_eq!(a_list[0]["task_id"].as_str().unwrap(), task_id);
         assert_eq!(a_list[0]["status"].as_str().unwrap(), "Queued");
 
-        thread::sleep(Duration::from_secs(4));
+        // A gets the result back. (B's executor picks tasks up within ~1 s,
+        // so there is no stable "Queued on B" moment to assert on.)
+        wait_for_condition(15, || {
+            api_get(NS_A, &format!("/compute/tasks/{}", pubkey_b))
+                .map(|t| t["tasks"][0]["status"] == "Completed")
+                .unwrap_or(false)
+        })
+        .context("task never completed on A")?;
+        let tasks_a = api_get(NS_A, &format!("/compute/tasks/{}", pubkey_b))?;
+        let stdout = tasks_a["tasks"][0]["result"]["stdout"]
+            .as_str()
+            .unwrap_or("");
+        assert_eq!(
+            stdout.trim(),
+            "hello from A",
+            "unexpected result: {}",
+            tasks_a
+        );
 
-        // B should have received it
+        // B ran it and records the same task
         let tasks_b = api_get(NS_B, &format!("/compute/tasks/{}", pubkey_a))?;
         let b_list = tasks_b["tasks"].as_array().context("no tasks on B")?;
         assert!(!b_list.is_empty(), "task not received on B");
         assert_eq!(b_list[0]["task_id"].as_str().unwrap(), task_id);
-        assert_eq!(b_list[0]["status"].as_str().unwrap(), "Queued");
+        assert_eq!(b_list[0]["status"].as_str().unwrap(), "Completed");
 
         // summit-ctl compute tasks <peer>
         let ctl_tasks = ctl(NS_B, &["compute", "tasks", &pubkey_a])?;

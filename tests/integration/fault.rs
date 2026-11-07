@@ -26,7 +26,10 @@ impl Drop for FaultGuard {
 
 // ── Network fault helpers ───────────────────────────────────────────────────
 
-/// Apply packet loss to an interface inside a namespace.
+/// Apply random packet loss to an interface's EGRESS (outbound) traffic.
+/// netem only shapes what `ns` sends: to lose data flowing A -> B, apply it
+/// to A. Loss is per IP packet, so a 32 KiB chunk (~23 fragments) is lost
+/// far more often than `loss_pct` — like real Wi-Fi frame loss.
 /// Uses `tc qdisc replace` (idempotent — won't fail if a previous test left a rule).
 pub fn add_packet_loss(ns: &str, iface: &str, loss_pct: u32) -> FaultGuard {
     let loss = format!("{}%", loss_pct);
@@ -214,6 +217,75 @@ pub fn send_garbage_udp(ns: &str, port: u16, count: u32) {
         .output();
 }
 
+/// Deterministically drop every `n`th large datagram arriving in `ns`
+/// (the 1st, n+1th, ...). Matches first IPv6 fragments only, so it hits
+/// data chunks (and large metadata) but never small control traffic:
+/// announcements, handshakes, NACKs, FILE_DONE. Dropping the first fragment
+/// loses the whole datagram. Unlike netem this guarantees holes, so a test
+/// that must exercise recovery always does.
+pub fn drop_every_nth_chunk(ns: &str, n: u32) -> FaultGuard {
+    let every = n.to_string();
+    let rule = |op: &str| -> Vec<String> {
+        [
+            "ip",
+            "netns",
+            "exec",
+            ns,
+            "ip6tables",
+            op,
+            "INPUT",
+            "-p",
+            "udp",
+            "-m",
+            "frag",
+            "--fragfirst",
+            "-m",
+            "statistic",
+            "--mode",
+            "nth",
+            "--every",
+            &every,
+            "--packet",
+            "0",
+            "-j",
+            "DROP",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+    };
+    let add = rule("-A");
+    let status = Command::new(&add[0])
+        .args(&add[1..])
+        .status()
+        .expect("run ip6tables");
+    assert!(status.success(), "failed to install nth-chunk drop rule");
+    FaultGuard::new(rule("-D"))
+}
+
+/// Datagrams dropped so far by `drop_every_nth_chunk` rules in `ns`.
+pub fn dropped_chunks(ns: &str) -> u64 {
+    let out = Command::new("ip")
+        .args([
+            "netns",
+            "exec",
+            ns,
+            "ip6tables",
+            "-L",
+            "INPUT",
+            "-v",
+            "-n",
+            "-x",
+        ])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
+    out.lines()
+        .filter(|l| l.contains("statistic mode nth"))
+        .filter_map(|l| l.split_whitespace().next()?.parse::<u64>().ok())
+        .sum()
+}
+
 // ── Invariant helpers ───────────────────────────────────────────────────────
 
 /// Check if the daemon API is reachable in a namespace.
@@ -244,4 +316,26 @@ where
         thread::sleep(Duration::from_millis(500));
     }
     anyhow::bail!("condition not met within {}s", timeout_secs)
+}
+
+/// Wait until `path` holds exactly `expected`, failing after `timeout_secs`.
+/// Polls, so passing tests finish as soon as the file lands.
+pub fn wait_for_file(path: &str, expected: &[u8], timeout_secs: u64) -> anyhow::Result<()> {
+    wait_for_condition(timeout_secs, || {
+        std::fs::read(path).map(|d| d == expected).unwrap_or(false)
+    })
+    .map_err(|_| {
+        let got = std::fs::read(path)
+            .map(|d| format!("{} bytes, content differs", d.len()))
+            .unwrap_or_else(|_| "missing".into());
+        anyhow::anyhow!("{path} not received intact within {timeout_secs}s ({got})")
+    })
+}
+
+/// Number of in-progress (incomplete) file assemblies on `ns`.
+pub fn files_in_progress(ns: &str) -> usize {
+    api_get(ns, "/files")
+        .ok()
+        .and_then(|f| f["in_progress"].as_array().map(|a| a.len()))
+        .unwrap_or(0)
 }

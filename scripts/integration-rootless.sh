@@ -11,4 +11,6 @@ cd "$(dirname "$0")/.."
 cargo build -p summitd -p summit-ctl
 cargo test --test integration --no-run
 
+# Inside the namespaces a missing environment is a failure, not a skip.
+export SUMMIT_REQUIRE_INTEGRATION=1
 exec scripts/rootless-netns.sh cargo test --offline --test integration "$@"

@@ -317,13 +317,17 @@ fn test_sender_killed_mid_transfer() {
 
     // Create a 2MB test file
     let test_file = "/tmp/summit-test-large-sender-kill.bin";
-    let data = vec![0xABu8; 2 * 1024 * 1024];
+    let data = distinct_bytes(2 * 1024 * 1024, 4);
     std::fs::write(test_file, &data).unwrap();
 
     let result = (|| -> Result<()> {
         wait_for_api(NS_A, 40)?;
         wait_for_api(NS_B, 40)?;
         let _session = wait_for_session(8)?;
+
+        // Lose every 2nd chunk so the transfer cannot finish before the kill
+        // (on a clean veth all 64 chunks land in well under 500ms).
+        let _loss = drop_every_nth_chunk(NS_B, 2);
 
         // Send file
         let _ = ctl(NS_A, &["send", test_file]);
@@ -367,9 +371,17 @@ fn test_receiver_killed_and_resend() {
     cleanup_summitd();
     std::fs::remove_dir_all("/tmp/summit-received").ok();
 
+    // B restarts with the SAME identity, like a real device would.
+    let key_b = *summit_core::crypto::Keypair::generate().private_bytes();
+    let pubkey_b: String = summit_core::crypto::Keypair::from_private(key_b)
+        .public
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+
     let auto_env = [("SUMMIT_TRUST__AUTO_TRUST", "true")];
     let mut node_a = spawn_daemon(NS_A, VETH_A, &auto_env);
-    let mut node_b = spawn_daemon(NS_B, VETH_B, &auto_env);
+    let mut node_b = spawn_daemon_with_key(NS_B, VETH_B, &auto_env, key_b);
 
     let test_content = "resend test — this file should arrive intact after receiver restart";
     let test_file = "/tmp/summit-test-resend.txt";
@@ -378,7 +390,7 @@ fn test_receiver_killed_and_resend() {
     let result = (|| -> Result<()> {
         wait_for_api(NS_A, 40)?;
         wait_for_api(NS_B, 40)?;
-        let _session = wait_for_session(8)?;
+        let old_session = wait_for_session(8)?;
 
         // Send file, then kill receiver
         let _ = ctl(NS_A, &["send", test_file]);
@@ -393,12 +405,25 @@ fn test_receiver_killed_and_resend() {
 
         // Restart receiver
         std::fs::remove_dir_all("/tmp/summit-received").ok();
-        node_b = spawn_daemon(NS_B, VETH_B, &auto_env);
+        node_b = spawn_daemon_with_key(NS_B, VETH_B, &auto_env, key_b);
         wait_for_api(NS_B, 40)?;
         println!("Receiver restarted");
 
-        // Wait for new session
-        wait_for_condition(30, || session_count(NS_A) > 0)?;
+        // A must replace its dead session to B with a fresh one, well before
+        // the 60 s receive timeout would have noticed.
+        wait_for_condition(20, || {
+            api_get(NS_A, "/status")
+                .ok()
+                .and_then(|s| {
+                    s["sessions"].as_array().map(|a| {
+                        a.len() == 1
+                            && a[0]["peer_pubkey"].as_str() == Some(pubkey_b.as_str())
+                            && a[0]["session_id"].as_str() != Some(old_session.as_str())
+                    })
+                })
+                .unwrap_or(false)
+        })
+        .context("A did not replace its session to the restarted B")?;
 
         // Re-send the file
         let send_out = ctl(NS_A, &["send", test_file])?;
@@ -598,7 +623,7 @@ fn test_block_during_file_transfer() {
 
     // Larger file to give us time to block mid-transfer
     let test_file = "/tmp/summit-test-block-transfer.bin";
-    let data = vec![0xCDu8; 512 * 1024]; // 512KB
+    let data = distinct_bytes(512 * 1024, 5); // 512KB
     std::fs::write(test_file, &data).unwrap();
 
     let result = (|| -> Result<()> {
@@ -608,6 +633,10 @@ fn test_block_during_file_transfer() {
 
         // Get A's pubkey as seen by B
         let pubkey_a = get_peer_pubkey(NS_B)?;
+
+        // Lose every 2nd chunk so the transfer is still incomplete when the
+        // block lands (a clean 512 KiB transfer finishes in ~20ms).
+        let _loss = drop_every_nth_chunk(NS_B, 2);
 
         // Send file from A
         let _ = ctl(NS_A, &["send", test_file]);
@@ -753,7 +782,7 @@ fn test_compute_worker_crash() {
         // Submit a long-running task
         let body = serde_json::json!({
             "to": pubkey_b,
-            "payload": { "op": "shell", "cmd": ["sleep", "30"] }
+            "payload": { "cmd": "sleep", "args": ["30"] }
         })
         .to_string();
         let resp = api_post(NS_A, "/compute/submit", &body)?;
@@ -773,17 +802,20 @@ fn test_compute_worker_crash() {
         // A should stay alive
         assert!(daemon_alive(NS_A), "A died after worker crash");
 
-        // Task should still show as Queued (B never reported completion)
+        // B acked Running, then died before reporting a result: A must not
+        // invent a terminal state.
         let tasks = api_get(NS_A, &format!("/compute/tasks/{}", pubkey_b))?;
         let task_list = tasks["tasks"].as_array().context("no tasks")?;
-        if let Some(task) = task_list
+        let task = task_list
             .iter()
             .find(|t| t["task_id"].as_str() == Some(&task_id))
-        {
-            let status = task["status"].as_str().unwrap_or("unknown");
-            println!("Task status after worker crash: {}", status);
-            assert_eq!(status, "Queued", "task status changed despite worker crash");
-        }
+            .context("task missing from A's store")?;
+        let status = task["status"].as_str().unwrap_or("unknown");
+        println!("Task status after worker crash: {}", status);
+        assert_eq!(
+            status, "Running",
+            "expected last-known Running after worker crash"
+        );
 
         // Restart B, verify A still functional
         node_b = spawn_daemon(NS_B, VETH_B, &env);

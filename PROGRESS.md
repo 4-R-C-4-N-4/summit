@@ -2,7 +2,7 @@
 
 ## Current state (2026-11-06)
 
-Branch: main (uncommitted). Gate: `cargo fmt --check && cargo clippy --workspace --all-targets && cargo test --workspace --exclude integration && scripts/integration-rootless.sh`
+Branch: main. Gate (same as CI): `cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace --lib && scripts/integration-rootless.sh -- --test-threads=1 && scripts/android-smoke-dryrun.sh [--filter-multicast]`
 
 ### Done, verified locally
 - Security: peer identity bound to the Noise-proven static key
@@ -46,26 +46,56 @@ Branch: main (uncommitted). Gate: `cargo fmt --check && cargo clippy --workspace
   needs no root (session formed with all capabilities dropped), README `sudo`
   removed.
 
+- Trust gate on the receive path: untrusted peers' chunks are buffered
+  before any service, cache or disk write sees them; blocked peers' are
+  dropped; untrusted peers can't trigger retransmission (NACK/GONE).
+  Received files are written 0644, never executable.
+- Reconnect after restart: a new handshake from a known identity supersedes
+  the stale session (~10 s to recover instead of ~60 s).
+- File delivery is confirmed. The sender re-sends a file's metadata every
+  3 s (up to 10 sends) until the receiver answers FILE_DONE; the receiver
+  re-answers for files it already completed. Fixes silent loss when the
+  metadata chunk is dropped. New assemblies pull blocks already in the chunk
+  cache, and files with repeated or shared blocks now complete (previously
+  any file with two identical 32 KiB blocks never finished).
+
+### Test suite: 58/58 integration, 150 unit (2026-11-06)
+- Faults now hit the traffic they claim to. netem shapes only a namespace's
+  outbound traffic, so the old "loss on the receiver" recovery tests lost
+  NACKs, not data, and passed without ever recovering anything; several also
+  accepted "file never arrived" as a pass. Data loss is now injected with
+  `drop_every_nth_chunk` (ip6tables nth match on first IPv6 fragments):
+  deterministic, guaranteed holes, control traffic untouched. Every recovery
+  test requires the file to arrive intact.
+- Transfer tests use `distinct_bytes` (repeated bytes collapse to one block
+  and hid the repeated-block bug). One clean-transfer test keeps repetitive
+  data on purpose as that regression test.
+- Metadata loss covered end to end: full blackout during send, and exactly
+  the metadata dropped while data lands. Negative control: with the
+  metadata re-send disabled both fail; with it both pass.
+- "Mid-transfer" tests (sender killed, sender blocked) force holes first; on
+  a clean veth the whole file landed before the kill, so they tested nothing.
+- With `SUMMIT_REQUIRE_INTEGRATION=1` (set by integration-rootless.sh) a
+  missing environment fails the suite instead of skipping every test green.
+- CI: new `integration` job (rootless namespaces on ubuntu-latest, preloaded
+  netfilter/netem modules, Android dry runs); clippy with `-D warnings` and
+  all targets. Not yet run on GitHub.
+
 ### Not verified
 - Anything on a real phone (needs the user's device: docs/ANDROID.md, rungs 1–3).
-- macOS/Windows runtime networking. CI `portability` and `android` jobs have
-  never run.
+- macOS/Windows runtime networking. CI `portability`, `android` and
+  `integration` jobs have never run on GitHub (local cross `cargo check
+  --all-targets` passes for windows-gnu and macOS).
 
-### Integration suite: 8 failures, all pre-existing (failed before these changes)
-- Stale tests: `compute::test_compute_task_simple`,
-  `failures::test_compute_worker_crash` (expect "Queued", but the executor now
-  runs tasks within 1 s), `status::test_ctl_schema_list` (schema names changed).
-- `recovery::test_nack_recovers_file_under_packet_loss`,
-  `recovery::test_nack_concurrent_file_recovery`,
-  `recovery::test_nack_loop_no_interference_clean_transfer`,
-  `failures::test_receiver_killed_and_resend`: file transfers lost. Confirmed
-  one root cause: if the FileMetadata chunk is dropped, the receiver never
-  creates an assembly, so the NACK loop has nothing to recover. The file is
-  silently lost. Wi-Fi will hit this.
-- `failures::test_trust_then_check_buffered_messages`: not investigated.
+### Risks to watch on real hardware
+- Chunks are up to 32 KiB, sent as single UDP datagrams, so ~23 IPv6
+  fragments each; losing any fragment loses the chunk. Wi-Fi frame retries
+  usually hide this, but if real-link transfers crawl, shrink chunks to fit
+  the MTU (the smoke script's diagnosis already flags "small works, bulk
+  doesn't").
+- Exhausted assemblies (sender gone) stay listed in progress until the 300 s
+  stale timeout.
 
 ### Next
 1. Real phone, rungs 1–3 of docs/ANDROID.md, plus 2b (Wi-Fi Direct).
-2. Metadata-loss recovery (sender-side retransmit of metadata until the
-   receiver acknowledges it).
-3. Android app shell (docs/ANDROID.md rung 4) + API auth token.
+2. Android app shell (docs/ANDROID.md rung 4) + API auth token.

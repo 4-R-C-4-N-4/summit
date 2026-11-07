@@ -40,6 +40,21 @@ pub const NS_B: &str = "summit-b";
 pub const VETH_A: &str = "veth-a";
 pub const VETH_B: &str = "veth-b";
 
+/// Deterministic non-repeating bytes (xorshift). Use for transfer tests:
+/// files with repeated blocks dedupe to fewer unique chunks, which would
+/// hide whether multi-block recovery actually works.
+pub fn distinct_bytes(len: usize, seed: u32) -> Vec<u8> {
+    let mut x = seed | 1;
+    (0..len)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            x as u8
+        })
+        .collect()
+}
+
 /// Serializes all daemon-based tests so they don't conflict on port 9001.
 pub static DAEMON_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -322,16 +337,30 @@ pub fn netns_available() -> bool {
 }
 
 /// Common guard: skip test if netns or binaries unavailable.
+/// Returns false (test skips) when the namespaces or binaries are missing,
+/// so a plain `cargo test` on a dev box doesn't fail. With
+/// `SUMMIT_REQUIRE_INTEGRATION=1` (set by integration-rootless.sh, i.e. in
+/// CI) a missing environment is a failure: a suite that silently skips
+/// every test must never look green.
 pub fn skip_unless_ready() -> bool {
+    let Some(reason) = skip_reason() else {
+        return true;
+    };
+    if std::env::var_os("SUMMIT_REQUIRE_INTEGRATION").is_some() {
+        panic!("integration environment required but unavailable: {reason}");
+    }
+    eprintln!("SKIP: {reason}");
+    false
+}
+
+fn skip_reason() -> Option<&'static str> {
     if !netns_available() {
-        eprintln!("SKIP: netns not available — run sudo ./scripts/netns-up.sh first");
-        return false;
+        return Some("netns not available — run scripts/integration-rootless.sh");
     }
     if !binaries_available() {
-        eprintln!("SKIP: binaries not built — run: cargo build -p summitd -p summit-ctl");
-        return false;
+        return Some("binaries not built — run: cargo build -p summitd -p summit-ctl");
     }
-    true
+    None
 }
 
 /// Wait for sessions to be established on NS_A (returns the first session_id).
