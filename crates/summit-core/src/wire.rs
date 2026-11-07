@@ -99,6 +99,10 @@ pub mod recovery {
     /// Receiver -> Sender: "Here's my bulk receive capacity."
     /// Sent post-handshake so the sender can tune its token bucket.
     pub const CAPACITY: u16 = 3;
+
+    /// Receiver -> Sender: "I have the whole file." Stops the sender
+    /// re-sending the file's metadata chunk.
+    pub const FILE_DONE: u16 = 4;
 }
 
 // ── Capability Announcement ───────────────────────────────────────────────────

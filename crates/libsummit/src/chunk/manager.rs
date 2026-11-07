@@ -183,19 +183,24 @@ impl ChunkManager {
                             serde_json::from_slice::<summit_services::FileMetadata>(&chunk.payload)
                         {
                             tracing::info!(filename = %metadata.filename, chunks = metadata.chunk_hashes.len(), "file transfer started");
-                            reassembler_for_handler
-                                .add_metadata(metadata, peer_pubkey)
-                                .await;
+                            if let Err(e) = reassembler_for_handler
+                                .add_metadata(chunk.content_hash, metadata, peer_pubkey)
+                                .await
+                            {
+                                tracing::warn!(error = %e, "file metadata handling failed");
+                            }
                         }
                     }
 
                     // Handle file data chunks (type_tag 2)
                     if chunk.type_tag == 2 {
-                        if let Ok(Some(path)) = reassembler_for_handler
+                        if let Ok(paths) = reassembler_for_handler
                             .add_chunk(chunk.content_hash, chunk.payload)
                             .await
                         {
-                            tracing::info!(path = %path.display(), "file completed");
+                            for path in paths {
+                                tracing::info!(path = %path.display(), "file completed");
+                            }
                         }
                     }
                 }
@@ -207,8 +212,10 @@ impl ChunkManager {
             let seen = seen_sessions.clone();
             let deactivate_dispatcher = self.dispatcher.clone();
             let deactivate_hashes = service_hashes.clone();
+            let recv_trust = self.trust.clone();
+            let recv_untrusted = self.untrusted_buffer.clone();
             tokio::spawn(async move {
-                if let Err(e) = super::receive::receive_loop(
+                let receive = super::receive::receive_loop(
                     socket,
                     crypto,
                     chunk_tx,
@@ -220,13 +227,31 @@ impl ChunkManager {
                     peer_pubkey,
                     bucket,
                     reassembler,
-                )
-                .await
-                {
-                    tracing::warn!(error = %e, "receive loop terminated");
+                    recv_trust,
+                    recv_untrusted,
+                );
+                // Stop as soon as the session leaves the table (superseded by
+                // a new handshake, or dropped via the API), not only on the
+                // receive timeout.
+                tokio::select! {
+                    r = receive => if let Err(e) = r {
+                        tracing::warn!(error = %e, "receive loop terminated");
+                    },
+                    _ = removed_from(&session_table, session_id) => {
+                        tracing::info!(
+                            session_id = hex::encode(session_id),
+                            "session removed, stopping its receive loop"
+                        );
+                    }
                 }
-                // Notify services that this peer's session has ended.
-                deactivate_dispatcher.deactivate_session(&peer_pubkey, &deactivate_hashes);
+                // Notify services that this peer's session has ended, unless
+                // a newer session with the same peer is already up.
+                let replaced = session_table
+                    .iter()
+                    .any(|s| s.value().meta.peer_pubkey == peer_pubkey && *s.key() != session_id);
+                if !replaced {
+                    deactivate_dispatcher.deactivate_session(&peer_pubkey, &deactivate_hashes);
+                }
                 // Prune the dead session so the initiator can reconnect
                 if session_table.remove(&session_id).is_some() {
                     tracing::info!(
@@ -236,6 +261,17 @@ impl ChunkManager {
                 }
                 seen.lock().await.remove(&session_id);
             });
+        }
+    }
+}
+
+/// Resolves once `session_id` is no longer in the session table.
+async fn removed_from(table: &SessionTable, session_id: [u8; 32]) {
+    let mut tick = tokio::time::interval(Duration::from_millis(500));
+    loop {
+        tick.tick().await;
+        if !table.contains_key(&session_id) {
+            return;
         }
     }
 }

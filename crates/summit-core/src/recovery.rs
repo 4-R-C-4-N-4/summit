@@ -37,6 +37,22 @@ pub struct Capacity {
     pub bulk_burst: u32,
 }
 
+/// FILE_DONE payload — the receiver confirms it has reassembled a file.
+///
+/// Wire: schema_id = recovery_hash(), type_tag = recovery::FILE_DONE
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileDone {
+    /// Content hash of the file's metadata chunk (identifies the transfer).
+    pub metadata_hash: [u8; 32],
+}
+
+/// How often the sender re-sends an unconfirmed file's metadata chunk.
+pub const METADATA_RESEND_SECS: u64 = 3;
+
+/// Metadata sends (including the first) before a transfer is reported as
+/// unconfirmed and dropped from tracking.
+pub const MAX_METADATA_SENDS: u8 = 10;
+
 /// GONE payload — sent by the sender when requested chunks are no longer cached.
 ///
 /// Wire: schema_id = recovery_hash(), type_tag = recovery::GONE

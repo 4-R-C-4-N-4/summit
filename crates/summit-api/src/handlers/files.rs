@@ -69,20 +69,16 @@ pub async fn handle_send(
         return Err((StatusCode::BAD_REQUEST, "empty filename".to_string()));
     }
 
-    // Write to temp file
-    let temp_path = std::env::temp_dir().join(&filename);
-    std::fs::write(&temp_path, &file_data)
+    // Chunk in memory (no temp file: avoids /tmp name collisions/symlinks)
+    let chunks = summit_services::chunk_bytes(&filename, &file_data)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    // Chunk the file
-    let chunks = summit_services::chunk_file(&temp_path)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    // Clean up temp file immediately after chunking
-    let _ = std::fs::remove_file(&temp_path);
 
     let bytes = file_data.len() as u64;
     let chunks_sent = chunks.len();
+
+    // Who must confirm delivery: the peers this send will actually reach.
+    let recipients = recipients_for(&state, &target);
+    let metadata_chunk = chunks[0].clone();
 
     // Push all chunks to send queue with target, pacing to avoid overwhelming slow receivers
     for chunk in chunks {
@@ -99,6 +95,12 @@ pub async fn handle_send(
         tokio::time::sleep(std::time::Duration::from_millis(1)).await;
     }
 
+    // Re-send metadata until each recipient confirms (FILE_DONE).
+    state
+        .reassembler
+        .track_outgoing(metadata_chunk, recipients)
+        .await;
+
     tracing::info!(
         filename,
         bytes,
@@ -112,6 +114,29 @@ pub async fn handle_send(
         bytes,
         chunks_sent,
     }))
+}
+
+/// Peers a send to `target` reaches: same rule as the send worker (broadcast
+/// goes to trusted sessions only).
+fn recipients_for(state: &ApiState, target: &SendTarget) -> Vec<[u8; 32]> {
+    use summit_services::TrustLevel;
+    let mut peers: Vec<[u8; 32]> = match target {
+        SendTarget::Broadcast => state
+            .sessions
+            .iter()
+            .map(|s| s.value().meta.peer_pubkey)
+            .filter(|k| state.trust.check(k) == TrustLevel::Trusted)
+            .collect(),
+        SendTarget::Peer { public_key } => vec![*public_key],
+        SendTarget::Session { session_id } => state
+            .sessions
+            .get(session_id)
+            .map(|s| vec![s.meta.peer_pubkey])
+            .unwrap_or_default(),
+    };
+    peers.sort();
+    peers.dedup();
+    peers
 }
 
 /// Sanitize a filename: strip path components, reject traversal attempts.

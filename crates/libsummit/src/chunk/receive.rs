@@ -8,10 +8,11 @@ use tokio::sync::{mpsc, Mutex};
 use zerocopy::FromBytes;
 
 use summit_core::crypto::{hash, Session};
-use summit_core::recovery::{Capacity, Gone, Nack};
+use summit_core::recovery::{Capacity, FileDone, Gone, Nack};
 use summit_core::wire::{self, ChunkHeader, MAX_UDP_BUF};
 use summit_services::{
-    ChunkCache, FileReassembler, KnownSchema, OutgoingChunk, SendTarget, TokenBucket,
+    ChunkCache, FileReassembler, KnownSchema, OutgoingChunk, SendTarget, TokenBucket, TrustLevel,
+    TrustRegistry, UntrustedBuffer,
 };
 
 /// How long to wait for data before considering the session dead.
@@ -35,6 +36,8 @@ pub async fn receive_loop(
     peer_pubkey: [u8; 32],
     bucket: Arc<Mutex<TokenBucket>>,
     reassembler: Arc<FileReassembler>,
+    trust: TrustRegistry,
+    untrusted: UntrustedBuffer,
 ) -> Result<()> {
     let mut buf = vec![0u8; MAX_UDP_BUF];
 
@@ -97,6 +100,36 @@ pub async fn receive_loop(
             );
         }
 
+        // Trust gate. Must run before anything acts on the chunk: services
+        // write files, store messages and queue compute tasks, and the cache
+        // writes to disk.
+        match admit(trust.check(&peer_pubkey), &header) {
+            Admit::Process => {}
+            Admit::Drop => {
+                tracing::debug!(
+                    peer = hex::encode(&peer_pubkey[..8]),
+                    type_tag = { header.type_tag },
+                    "chunk from blocked/untrusted peer dropped"
+                );
+                continue;
+            }
+            Admit::Buffer => {
+                tracing::info!(
+                    peer = hex::encode(&peer_pubkey[..8]),
+                    content_hash = hex::encode(&header.content_hash[..8]),
+                    "chunk from untrusted peer, buffering until trusted"
+                );
+                untrusted.add(
+                    peer_pubkey,
+                    header.content_hash,
+                    header.type_tag,
+                    header.schema_id,
+                    payload,
+                );
+                continue;
+            }
+        }
+
         // Record delivery BEFORE caching (to track all arrivals)
         tracker.record(header.content_hash, peer_addr.clone());
         let delivery_count = tracker.delivery_count(&header.content_hash);
@@ -123,8 +156,14 @@ pub async fn receive_loop(
             "chunk received"
         );
 
-        // Only deliver to application on FIRST receipt
-        if delivery_count == 1 {
+        // Only deliver to application on FIRST receipt. Exceptions, both
+        // idempotent: file metadata (senders re-send it until confirmed and
+        // the reassembler must answer FILE_DONE again), and FILE_DONE itself
+        // (identical bytes from different recipients of the same file).
+        let always_deliver = header.schema_id == KnownSchema::FileMetadata.id()
+            || (header.schema_id == wire::recovery_hash() && { header.type_tag }
+                == wire::recovery::FILE_DONE);
+        if delivery_count == 1 || always_deliver {
             // Handle recovery protocol directly (below service layer)
             if header.schema_id == wire::recovery_hash() {
                 handle_recovery(
@@ -291,6 +330,15 @@ async fn handle_recovery(
             }
         }
 
+        wire::recovery::FILE_DONE => match serde_json::from_slice::<FileDone>(payload) {
+            Ok(done) => {
+                reassembler
+                    .confirm_outgoing(&done.metadata_hash, peer_pubkey)
+                    .await
+            }
+            Err(e) => tracing::warn!(error = %e, "invalid FILE_DONE payload"),
+        },
+
         wire::recovery::CAPACITY => {
             let cap: Capacity = match serde_json::from_slice(payload) {
                 Ok(c) => c,
@@ -320,5 +368,70 @@ async fn handle_recovery(
         _ => {
             tracing::warn!(type_tag, "unknown recovery type_tag");
         }
+    }
+}
+
+/// What to do with a chunk, given the sender's trust level.
+#[derive(Debug, PartialEq, Eq)]
+enum Admit {
+    Process,
+    /// Hold until the user trusts the peer, then replay through the services.
+    Buffer,
+    Drop,
+}
+
+fn admit(level: TrustLevel, header: &ChunkHeader) -> Admit {
+    let recovery = header.schema_id == wire::recovery_hash();
+    let type_tag = header.type_tag; // packed struct: copy out
+    match level {
+        TrustLevel::Trusted => Admit::Process,
+        TrustLevel::Blocked => Admit::Drop,
+        // Capacity is flow control for chunks we may send them; harmless.
+        TrustLevel::Untrusted if recovery && type_tag == wire::recovery::CAPACITY => Admit::Process,
+        // NACK/GONE would make us retransmit cached content to them.
+        TrustLevel::Untrusted if recovery => Admit::Drop,
+        TrustLevel::Untrusted => Admit::Buffer,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn header(schema_id: [u8; 32], type_tag: u16) -> ChunkHeader {
+        ChunkHeader {
+            content_hash: [0; 32],
+            schema_id,
+            type_tag,
+            length: 0,
+            flags: 0,
+            version: 1,
+        }
+    }
+
+    #[test]
+    fn untrusted_service_chunks_are_buffered_not_processed() {
+        let msg = header(summit_services::messaging_schema_id(), 0);
+        let file = header(KnownSchema::FileData.id(), 2);
+        assert_eq!(admit(TrustLevel::Untrusted, &msg), Admit::Buffer);
+        assert_eq!(admit(TrustLevel::Untrusted, &file), Admit::Buffer);
+        assert_eq!(admit(TrustLevel::Trusted, &msg), Admit::Process);
+    }
+
+    #[test]
+    fn blocked_peers_get_nothing() {
+        let cap = header(wire::recovery_hash(), wire::recovery::CAPACITY);
+        let msg = header(summit_services::messaging_schema_id(), 0);
+        assert_eq!(admit(TrustLevel::Blocked, &cap), Admit::Drop);
+        assert_eq!(admit(TrustLevel::Blocked, &msg), Admit::Drop);
+    }
+
+    #[test]
+    fn untrusted_may_send_capacity_but_not_nack() {
+        let cap = header(wire::recovery_hash(), wire::recovery::CAPACITY);
+        let nack = header(wire::recovery_hash(), wire::recovery::NACK);
+        assert_eq!(admit(TrustLevel::Untrusted, &cap), Admit::Process);
+        assert_eq!(admit(TrustLevel::Untrusted, &nack), Admit::Drop);
+        assert_eq!(admit(TrustLevel::Trusted, &nack), Admit::Process);
     }
 }

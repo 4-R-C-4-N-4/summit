@@ -384,6 +384,7 @@ impl SessionListener {
             let session_id = state.session.session_id;
             let active_services = default_active_services();
 
+            drop_superseded_sessions(&self.sessions, &state.peer_pubkey);
             self.sessions.insert(
                 session_id,
                 ActiveSession {
@@ -437,6 +438,7 @@ impl SessionListener {
             let session_id = state.session.session_id;
             let active_services = default_active_services();
 
+            drop_superseded_sessions(&self.sessions, &state.peer_pubkey);
             self.sessions.insert(
                 session_id,
                 ActiveSession {
@@ -480,4 +482,25 @@ fn record_proven_peer(registry: &PeerRegistry, pubkey: [u8; 32], ip: Ipv6Addr, s
             );
             PeerEntry::from_handshake(ip, pubkey, session_port)
         });
+}
+
+/// A new handshake with a peer supersedes any session we still hold for the
+/// same (proven) key: the peer restarted, changed address, or re-keyed. The
+/// old session is dead from its side, and keeping it would black-hole sends
+/// until the receive timeout notices (60 s).
+fn drop_superseded_sessions(sessions: &SessionTable, peer_pubkey: &[u8; 32]) {
+    let stale: Vec<[u8; 32]> = sessions
+        .iter()
+        .filter(|s| s.value().meta.peer_pubkey == *peer_pubkey)
+        .map(|s| *s.key())
+        .collect();
+    for id in stale {
+        if sessions.remove(&id).is_some() {
+            tracing::info!(
+                peer = hex::encode(&peer_pubkey[..8]),
+                old_session = hex::encode(&id[..8]),
+                "new handshake supersedes existing session"
+            );
+        }
+    }
 }

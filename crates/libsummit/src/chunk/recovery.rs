@@ -31,6 +31,7 @@ pub async fn recovery_loop(
             }
             _ = interval.tick() => {
                 send_nacks(&reassembler, &chunk_tx).await;
+                resend_unconfirmed_metadata(&reassembler, &chunk_tx).await;
             }
         }
     }
@@ -85,7 +86,7 @@ async fn send_nacks(
         }
 
         reassembler
-            .increment_nack_count(&assembly.filename, assembly.missing.len())
+            .increment_nack_count(&assembly.id, assembly.missing.len())
             .await;
 
         tracing::info!(
@@ -95,5 +96,24 @@ async fn send_nacks(
             targeted = assembly.attempt == 0,
             "NACK sent for stalled file assembly"
         );
+    }
+}
+
+/// Sender side: re-send the metadata of files not yet confirmed (FILE_DONE)
+/// by their recipients. Without metadata a receiver can't know the file
+/// exists, so a lost metadata chunk is only recoverable from here.
+async fn resend_unconfirmed_metadata(
+    reassembler: &FileReassembler,
+    chunk_tx: &mpsc::Sender<(SendTarget, OutgoingChunk)>,
+) {
+    let interval = Duration::from_secs(summit_core::recovery::METADATA_RESEND_SECS);
+    for (chunk, peers) in reassembler.due_metadata_resends(interval).await {
+        for peer in peers {
+            tracing::debug!(peer = hex::encode(&peer[..8]), "re-sending file metadata");
+            let target = SendTarget::Peer { public_key: peer };
+            if chunk_tx.send((target, chunk.clone())).await.is_err() {
+                return;
+            }
+        }
     }
 }

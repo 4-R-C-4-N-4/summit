@@ -136,7 +136,11 @@ impl Node {
         // File reassembler
         let file_transfer_path = config.services.file_transfer_settings.storage_path.clone();
         tracing::info!(path = %file_transfer_path.display(), "file transfer storage path");
-        let reassembler = Arc::new(FileReassembler::new(file_transfer_path.clone()));
+        let reassembler = Arc::new(
+            FileReassembler::new(file_transfer_path.clone())
+                .with_cache(cache.clone())
+                .with_outbound(chunk_tx.clone()),
+        );
 
         // Service dispatcher
         let dispatcher = {
